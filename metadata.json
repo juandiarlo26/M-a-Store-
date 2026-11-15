@@ -1,0 +1,8 @@
+{
+  "name": "Mía Store",
+  "description": "Tienda de ropa femenina minimalista y elegante conectada a Firebase con panel de inventario, pedidos y pasarela de pagos.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

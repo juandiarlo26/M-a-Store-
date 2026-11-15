@@ -1,0 +1,412 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Prenda o artículo del catálogo de Mía Store con control de inventario en tiempo real.",
+      "type": "object",
+      "properties": {
+        "sku": {
+          "type": "string",
+          "description": "Código único de la prenda para control en tienda física e inventario.",
+          "minLength": 2,
+          "maxLength": 32,
+          "pattern": "^[A-Z0-9\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Nombre de la prenda.",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "description": "Descripción editorial de materiales, caída y detalles.",
+          "minLength": 5,
+          "maxLength": 1200
+        },
+        "price": {
+          "type": "number",
+          "description": "Precio unitario en pesos colombianos."
+        },
+        "category": {
+          "type": "string",
+          "description": "Categoría principal de la prenda.",
+          "enum": ["Vestidos", "Blusas", "Blazers", "Conjuntos", "Faldas", "Pantalones", "Accesorios"]
+        },
+        "color": {
+          "type": "string",
+          "description": "Tono principal de la prenda.",
+          "minLength": 2,
+          "maxLength": 40
+        },
+        "sizes": {
+          "type": "array",
+          "description": "Tallas disponibles para la prenda (máximo 10)."
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "URL, ruta o imagen optimizada en Data URL de la prenda.",
+          "minLength": 4,
+          "maxLength": 450000
+        },
+        "stock": {
+          "type": "integer",
+          "description": "Unidades disponibles en inventario."
+        },
+        "featured": {
+          "type": "boolean",
+          "description": "Indica si la prenda se destaca en la colección principal."
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Indica si la prenda está publicada y visible en la tienda."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha de creación en servidor."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha de última actualización en servidor."
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "price",
+        "category",
+        "color",
+        "sizes",
+        "imageUrl",
+        "stock",
+        "featured",
+        "active",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Pedido solicitado por WhatsApp en Mía Store con seguimiento de estado y descuento de primera compra.",
+      "type": "object",
+      "properties": {
+        "orderNumber": {
+          "type": "string",
+          "description": "Código legible del pedido (ej. MIA-1042).",
+          "minLength": 4,
+          "maxLength": 24,
+          "pattern": "^[A-Z0-9\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "UID de Firebase Auth de la clienta."
+        },
+        "customerName": {
+          "type": "string",
+          "description": "Nombre completo de la clienta.",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "customerEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo electrónico de contacto.",
+          "minLength": 5,
+          "maxLength": 160
+        },
+        "customerPhone": {
+          "type": "string",
+          "description": "Teléfono o WhatsApp de contacto.",
+          "minLength": 7,
+          "maxLength": 30
+        },
+        "shippingAddress": {
+          "type": "string",
+          "description": "Dirección completa de entrega.",
+          "minLength": 5,
+          "maxLength": 250
+        },
+        "city": {
+          "type": "string",
+          "description": "Ciudad o municipio de entrega.",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "notes": {
+          "type": "string",
+          "description": "Indicaciones adicionales de entrega o empaque regalo.",
+          "maxLength": 300
+        },
+        "items": {
+          "type": "array",
+          "description": "Listado acotado de prendas incluidas en el pedido (1 a 20)."
+        },
+        "subtotal": {
+          "type": "number",
+          "description": "Subtotal de prendas antes de descuento."
+        },
+        "discountAmount": {
+          "type": "number",
+          "description": "Descuento del 10% aplicado por primera compra registrada."
+        },
+        "discountCode": {
+          "type": "string",
+          "description": "Identificador del beneficio aplicado.",
+          "maxLength": 40
+        },
+        "shippingCost": {
+          "type": "number",
+          "description": "Costo de envío aplicado."
+        },
+        "total": {
+          "type": "number",
+          "description": "Total final del pedido."
+        },
+        "paymentMethod": {
+          "type": "string",
+          "description": "Canal de confirmación de pedido.",
+          "enum": ["whatsapp"]
+        },
+        "paymentStatus": {
+          "type": "string",
+          "description": "Estado del pago.",
+          "enum": ["pendiente_pago", "pagado"]
+        },
+        "paymentReference": {
+          "type": "string",
+          "description": "Referencia de seguimiento del pedido.",
+          "minLength": 4,
+          "maxLength": 64
+        },
+        "status": {
+          "type": "string",
+          "description": "Estado del pedido actualizado por el administrador.",
+          "enum": ["pendiente", "pagado", "preparando", "enviado", "entregado", "cancelado"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha de creación en servidor."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha de actualización en servidor."
+        }
+      },
+      "required": [
+        "orderNumber",
+        "userId",
+        "customerName",
+        "customerEmail",
+        "customerPhone",
+        "shippingAddress",
+        "city",
+        "items",
+        "subtotal",
+        "discountAmount",
+        "shippingCost",
+        "total",
+        "paymentMethod",
+        "paymentStatus",
+        "paymentReference",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CustomerProfile": {
+      "title": "CustomerProfile",
+      "description": "Registro de clientas que ingresan y se registran en Mía Store con control de descuento único del 10% en su primer pedido.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "UID de Firebase Auth de la clienta."
+        },
+        "name": {
+          "type": "string",
+          "description": "Nombre de la clienta.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo electrónico verificado.",
+          "minLength": 5,
+          "maxLength": 160
+        },
+        "phone": {
+          "type": "string",
+          "description": "Teléfono de contacto si ya realizó compra.",
+          "maxLength": 30
+        },
+        "welcomeDiscountUsed": {
+          "type": "boolean",
+          "description": "Indica si ya utilizó el 10% de descuento de bienvenida en su primer pedido."
+        },
+        "ordersCount": {
+          "type": "integer",
+          "description": "Cantidad de pedidos realizados por la clienta."
+        },
+        "registeredAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha del primer registro."
+        },
+        "lastSeenAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Última fecha de ingreso."
+        }
+      },
+      "required": [
+        "uid",
+        "name",
+        "email",
+        "welcomeDiscountUsed",
+        "ordersCount",
+        "registeredAt",
+        "lastSeenAt"
+      ]
+    },
+    "StaffMember": {
+      "title": "StaffMember",
+      "description": "Trabajadores autorizados como administradores para gestionar catálogo, inventario y pedidos.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo Google del trabajador autorizado.",
+          "minLength": 5,
+          "maxLength": 160
+        },
+        "name": {
+          "type": "string",
+          "description": "Nombre o cargo del trabajador.",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "role": {
+          "type": "string",
+          "description": "Rol asignado.",
+          "enum": ["admin"]
+        },
+        "addedBy": {
+          "type": "string",
+          "description": "Correo de la propietaria que autorizó el acceso.",
+          "minLength": 5,
+          "maxLength": 160
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha de autorización."
+        }
+      },
+      "required": ["email", "name", "role", "addedBy", "createdAt"]
+    },
+    "StoreSettings": {
+      "title": "StoreSettings",
+      "description": "Configuración dinámica de la tienda administrable desde el panel.",
+      "type": "object",
+      "properties": {
+        "announcementText": {
+          "type": "string",
+          "description": "Mensaje superior de anuncios y envíos.",
+          "minLength": 0,
+          "maxLength": 140
+        },
+        "freeShippingThreshold": {
+          "type": "number",
+          "description": "Monto mínimo para envío gratuito."
+        },
+        "shippingFee": {
+          "type": "number",
+          "description": "Tarifa estándar de envío."
+        },
+        "heroTitle": {
+          "type": "string",
+          "description": "Titular principal de portada.",
+          "minLength": 4,
+          "maxLength": 100
+        },
+        "heroSubtitle": {
+          "type": "string",
+          "description": "Subtítulo editorial de portada.",
+          "minLength": 4,
+          "maxLength": 240
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Última actualización."
+        }
+      },
+      "required": [
+        "announcementText",
+        "freeShippingThreshold",
+        "shippingFee",
+        "heroTitle",
+        "heroSubtitle",
+        "updatedAt"
+      ]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Registro de administradores por UID.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo verificado del administrador.",
+          "minLength": 5,
+          "maxLength": 160
+        },
+        "name": {
+          "type": "string",
+          "description": "Nombre del administrador.",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha de alta."
+        }
+      },
+      "required": ["email", "name", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Catálogo de prendas en tiempo real de Mía Store."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Pedidos por WhatsApp con seguimiento en tiempo real."
+    },
+    "/customers/{uid}": {
+      "schema": { "$ref": "#/entities/CustomerProfile" },
+      "description": "Clientas registradas y estado único del 10% de descuento en primera compra."
+    },
+    "/staff/{staffEmail}": {
+      "schema": { "$ref": "#/entities/StaffMember" },
+      "description": "Lista de trabajadores autorizados como administradores por correo electrónico."
+    },
+    "/store_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/StoreSettings" },
+      "description": "Parámetros generales de envío y portada de la tienda."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Lista blanca de cuentas administradoras por UID."
+    }
+  }
+}
