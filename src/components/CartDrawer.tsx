@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Gift, Minus, Plus, ShoppingBag, Trash2, X } from 'lucide-react';
-import { useStore } from '../context/StoreContext';
+import { getAvailableStockForSize, useStore } from '../context/StoreContext';
 import { formatCOP } from '../lib/starterCatalog';
 import { ResilientImage } from './ResilientImage';
 
@@ -137,8 +137,11 @@ export function CartDrawer({ open, onClose, onCheckout }: CartDrawerProps) {
             </div>
           ) : (
             cart.map((item) => {
-              const liveImg =
-                products.find((p) => p.id === item.productId)?.imageUrl || item.imageUrl;
+              const liveProd = products.find((p) => p.id === item.productId);
+              const liveImg = liveProd?.imageUrl || item.imageUrl;
+              const liveMaxStock = liveProd
+                ? getAvailableStockForSize(liveProd, item.size)
+                : item.maxStock;
               return (
               <div key={`${item.productId}-${item.size}`} className="py-4 flex gap-4">
                 <div className="w-20 h-26 rounded-xl overflow-hidden bg-[#F8EFEA] shrink-0 border border-[#EAE0DA]">
@@ -158,6 +161,15 @@ export function CartDrawer({ open, onClose, onCheckout }: CartDrawerProps) {
                       <p className="text-xs text-[#756661] mt-0.5">
                         Talla {item.size} <span aria-hidden="true">·</span> {item.color}
                       </p>
+                      {liveMaxStock <= 0 ? (
+                        <p className="text-[11px] text-[#B91C1C] mt-0.5">
+                          Sin unidades en talla {item.size}
+                        </p>
+                      ) : item.quantity > liveMaxStock ? (
+                        <p className="text-[11px] text-[#B91C1C] mt-0.5 tabular-nums">
+                          Disponibles en talla {item.size}: {liveMaxStock}
+                        </p>
+                      ) : null}
                     </div>
                     <button
                       type="button"
@@ -189,7 +201,7 @@ export function CartDrawer({ open, onClose, onCheckout }: CartDrawerProps) {
                         onClick={() =>
                           updateCartQuantity(item.productId, item.size, item.quantity + 1)
                         }
-                        disabled={item.quantity >= item.maxStock}
+                        disabled={item.quantity >= liveMaxStock}
                         aria-label="Aumentar cantidad"
                         className="min-h-[36px] min-w-[36px] flex items-center justify-center text-[#231F20] hover:bg-[#F8EFEA] disabled:opacity-35"
                       >

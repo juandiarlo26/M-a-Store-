@@ -42,6 +42,7 @@ export const PRODUCT_LIMITS = {
   colorMax: 40,
   imageUrlMin: 4,
   imageUrlMax: 450000,
+  maxImages: 6,
   maxSizes: 10,
   maxStock: 100000,
   maxPrice: 100000000,
@@ -68,7 +69,34 @@ export const SETTINGS_LIMITS = {
   heroTitleMax: 100,
   heroSubtitleMin: 4,
   heroSubtitleMax: 240,
+  deliveryTimeMax: 160,
+  legalBusinessNameMax: 140,
+  legalDocumentIdMax: 40,
+  legalAddressMax: 180,
+  legalCityMax: 80,
+  legalEmailMax: 160,
+  legalPhoneMax: 30,
+  legalUpdatedAtMax: 40,
 } as const;
+
+export const WAITLIST_LIMITS = {
+  nameMin: 2,
+  nameMax: 80,
+} as const;
+
+export const META_PIXEL_REGEX = /^[0-9]{10,20}$/;
+export const GA_MEASUREMENT_REGEX = /^G-[A-Z0-9]{6,16}$/;
+export const COLOMBIA_WHATSAPP_10_REGEX = /^3[0-9]{9}$/;
+export const COLOMBIA_WHATSAPP_NORMALIZED_REGEX = /^573[0-9]{9}$/;
+
+export type LaunchMode = 'proximamente' | 'abierta';
+
+export interface SizeGuideRow {
+  size: string;
+  bust: string;
+  waist: string;
+  hip: string;
+}
 
 export interface Product {
   id: string;
@@ -79,7 +107,9 @@ export interface Product {
   category: ProductCategory;
   color: string;
   sizes: string[];
+  stockBySize?: Record<string, number>;
   imageUrl: string;
+  images?: string[];
   stock: number;
   featured: boolean;
   active: boolean;
@@ -122,6 +152,7 @@ export interface Order {
   notes?: string;
   items: OrderItem[];
   stockDeltas?: Record<string, number>;
+  sizeDeltas?: Record<string, number>;
   subtotal: number;
   discountAmount: number;
   discountCode?: string;
@@ -142,6 +173,7 @@ export interface CustomerProfile {
   phone?: string;
   welcomeDiscountUsed: boolean;
   ordersCount: number;
+  privacyConsentAt?: Timestamp | null;
   registeredAt?: Timestamp | null;
   lastSeenAt?: Timestamp | null;
 }
@@ -161,7 +193,28 @@ export interface StoreSettings {
   shippingFee: number;
   heroTitle: string;
   heroSubtitle: string;
+  launchMode?: LaunchMode;
+  launchDate?: Timestamp | null;
+  metaPixelId?: string;
+  gaMeasurementId?: string;
+  deliveryTimeText?: string;
+  sizeGuide?: SizeGuideRow[];
+  legalBusinessName?: string;
+  legalDocumentId?: string;
+  legalAddress?: string;
+  legalCity?: string;
+  legalEmail?: string;
+  legalPhone?: string;
+  legalUpdatedAt?: string;
   updatedAt?: Timestamp | null;
+}
+
+export interface WaitlistEntry {
+  id: string;
+  name: string;
+  phone: string;
+  consent: boolean;
+  createdAt?: Timestamp | null;
 }
 
 export const BOOTSTRAPPED_ADMIN_EMAILS = [

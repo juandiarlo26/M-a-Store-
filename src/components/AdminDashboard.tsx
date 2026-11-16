@@ -1,11 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Timestamp } from 'firebase/firestore';
 import {
+  Activity,
+  AlertTriangle,
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
   BarChart3,
   Check,
+  Clock,
+  Download,
   Edit3,
   Eye,
   EyeOff,
+  FileText,
   ImagePlus,
   Link2,
   MessageCircle,
@@ -14,6 +22,7 @@ import {
   Plus,
   Printer,
   RefreshCw,
+  Ruler,
   Search,
   Settings,
   ShieldCheck,
@@ -27,16 +36,26 @@ import {
   X,
 } from 'lucide-react';
 import { useStore, type ProductInput } from '../context/StoreContext';
-import { compressImageFileForCatalog } from '../lib/imageUpload';
+import { uploadProductImage } from '../lib/imageUpload';
 import { generateSuggestedSku, normalizeSku } from '../lib/skuUtils';
-import { formatCOP, STUDIO_GALLERY_PRESETS } from '../lib/starterCatalog';
+import {
+  DEFAULT_DELIVERY_TIME_TEXT,
+  DEFAULT_SIZE_GUIDE,
+  formatCOP,
+  getProductImages,
+  STUDIO_GALLERY_PRESETS,
+} from '../lib/starterCatalog';
 import {
   AVAILABLE_SIZES,
   PRODUCT_CATEGORIES,
   PRODUCT_LIMITS,
+  SETTINGS_LIMITS,
+  type LaunchMode,
+  type Order,
   type OrderStatus,
   type Product,
   type ProductCategory,
+  type SizeGuideRow,
 } from '../types/store';
 import { PrintableTagModal } from './PrintableTagModal';
 import { ResilientImage } from './ResilientImage';
@@ -45,7 +64,14 @@ interface AdminDashboardProps {
   onBackToStore: () => void;
 }
 
-type AdminTab = 'resumen' | 'inventario' | 'pedidos' | 'clientas' | 'equipo' | 'tienda';
+type AdminTab =
+  | 'resumen'
+  | 'inventario'
+  | 'pedidos'
+  | 'clientas'
+  | 'waitlist'
+  | 'equipo'
+  | 'tienda';
 
 const ORDER_STATUS_OPTIONS: Array<{ value: OrderStatus; label: string }> = [
   { value: 'pendiente', label: 'Pendiente' },
@@ -61,6 +87,22 @@ function formatCustomerWhatsappHref(phone: string): string | null {
   if (digits.length < 7) return null;
   const full = digits.length === 10 ? `57${digits}` : digits;
   return `https://wa.me/${full}`;
+}
+
+function formatColombianDisplayPhone(phone: string): string {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('57')) {
+    const local = digits.slice(2);
+    return `+57 ${local.slice(0, 3)} ${local.slice(3, 6)} ${local.slice(6)}`;
+  }
+  return phone;
+}
+
+function toDatetimeLocalValue(ts?: Timestamp | null): string {
+  if (!ts || typeof ts.toDate !== 'function') return '';
+  const d = ts.toDate();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function formatDateTime(ts?: { toDate?: () => Date } | null): string {
@@ -83,6 +125,8 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
     orders,
     customers,
     customersLoading,
+    waitlistEntries,
+    waitlistLoading,
     staffMembers,
     settings,
     seedStarterCatalog,
@@ -93,6 +137,7 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
     deleteProduct,
     updateOrderStatus,
     updateStoreSettings,
+    deleteWaitlistEntry,
     addStaffMember,
     removeStaffMember,
   } = useStore();
@@ -112,25 +157,45 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
   // Product modal state
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [draftProductId, setDraftProductId] = useState<string>('');
   const [deleteTarget, setDeleteTarget] = useState<Product | null>(null);
   const [productModalError, setProductModalError] = useState<string | null>(null);
   const [imageUploading, setImageUploading] = useState(false);
-  const [uploadedSizeKb, setUploadedSizeKb] = useState<number | null>(null);
+  const [imageUploadNotice, setImageUploadNotice] = useState<{
+    kind: 'storage' | 'fallback';
+    text: string;
+  } | null>(null);
   const [showUrlField, setShowUrlField] = useState(false);
+  const [newImageUrlInput, setNewImageUrlInput] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Printable tag modal state
   const [tagModalOpen, setTagModalOpen] = useState(false);
   const [tagSingleProduct, setTagSingleProduct] = useState<Product | null>(null);
 
+  // Order "Pagado" confirmation modal when price/discount alert triggers
+  const [paidConfirmTarget, setPaidConfirmTarget] = useState<{
+    order: Order;
+    expectedSubtotal: number;
+    hasSubtotalMismatch: boolean;
+    hasExcessiveDiscount: boolean;
+  } | null>(null);
+
   const [formSku, setFormSku] = useState('');
   const [formName, setFormName] = useState('');
   const [formCategory, setFormCategory] = useState<ProductCategory>('Vestidos');
   const [formPrice, setFormPrice] = useState('220000');
   const [formColor, setFormColor] = useState('');
-  const [formStock, setFormStock] = useState('8');
-  const [formSizes, setFormSizes] = useState<string[]>(['S', 'M', 'L']);
-  const [formImageUrl, setFormImageUrl] = useState<string>(STUDIO_GALLERY_PRESETS[0].url);
+  const [formSizes, setFormSizes] = useState<string[]>(['XS', 'S', 'M', 'L']);
+  const [formStockBySize, setFormStockBySize] = useState<Record<string, string>>({
+    XS: '2',
+    S: '3',
+    M: '3',
+    L: '2',
+    XL: '0',
+    Única: '0',
+  });
+  const [formImages, setFormImages] = useState<string[]>([STUDIO_GALLERY_PRESETS[0].url]);
   const [formDescription, setFormDescription] = useState('');
   const [formFeatured, setFormFeatured] = useState(true);
   const [formActive, setFormActive] = useState(true);
@@ -143,6 +208,29 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
     String(settings.freeShippingThreshold)
   );
   const [setShippingFee, setSetShippingFee] = useState(String(settings.shippingFee));
+  const [setLaunchMode, setSetLaunchMode] = useState<LaunchMode>(
+    settings.launchMode ?? 'proximamente'
+  );
+  const [setLaunchDateStr, setSetLaunchDateStr] = useState(
+    toDatetimeLocalValue(settings.launchDate)
+  );
+  const [setMetaPixelId, setSetMetaPixelId] = useState(settings.metaPixelId ?? '');
+  const [setGaMeasurementId, setSetGaMeasurementId] = useState(settings.gaMeasurementId ?? '');
+  const [setDeliveryTimeText, setSetDeliveryTimeText] = useState(
+    settings.deliveryTimeText ?? DEFAULT_DELIVERY_TIME_TEXT
+  );
+  const [setSizeGuide, setSetSizeGuide] = useState<SizeGuideRow[]>(
+    settings.sizeGuide && settings.sizeGuide.length > 0 ? settings.sizeGuide : DEFAULT_SIZE_GUIDE
+  );
+  const [setLegalBusinessName, setSetLegalBusinessName] = useState(
+    settings.legalBusinessName ?? ''
+  );
+  const [setLegalDocumentId, setSetLegalDocumentId] = useState(settings.legalDocumentId ?? '');
+  const [setLegalAddress, setSetLegalAddress] = useState(settings.legalAddress ?? '');
+  const [setLegalCity, setSetLegalCity] = useState(settings.legalCity ?? '');
+  const [setLegalEmail, setSetLegalEmail] = useState(settings.legalEmail ?? '');
+  const [setLegalPhone, setSetLegalPhone] = useState(settings.legalPhone ?? '');
+  const [setLegalUpdatedAt, setSetLegalUpdatedAt] = useState(settings.legalUpdatedAt ?? '');
 
   useEffect(() => {
     setSetAnnouncement(settings.announcementText);
@@ -150,6 +238,21 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
     setSetHeroSubtitle(settings.heroSubtitle);
     setSetFreeThreshold(String(settings.freeShippingThreshold));
     setSetShippingFee(String(settings.shippingFee));
+    setSetLaunchMode(settings.launchMode ?? 'proximamente');
+    setSetLaunchDateStr(toDatetimeLocalValue(settings.launchDate));
+    setSetMetaPixelId(settings.metaPixelId ?? '');
+    setSetGaMeasurementId(settings.gaMeasurementId ?? '');
+    setSetDeliveryTimeText(settings.deliveryTimeText ?? DEFAULT_DELIVERY_TIME_TEXT);
+    setSetSizeGuide(
+      settings.sizeGuide && settings.sizeGuide.length > 0 ? settings.sizeGuide : DEFAULT_SIZE_GUIDE
+    );
+    setSetLegalBusinessName(settings.legalBusinessName ?? '');
+    setSetLegalDocumentId(settings.legalDocumentId ?? '');
+    setSetLegalAddress(settings.legalAddress ?? '');
+    setSetLegalCity(settings.legalCity ?? '');
+    setSetLegalEmail(settings.legalEmail ?? '');
+    setSetLegalPhone(settings.legalPhone ?? '');
+    setSetLegalUpdatedAt(settings.legalUpdatedAt ?? '');
   }, [settings]);
 
   const showNotice = (type: 'ok' | 'err', text: string) => {
@@ -159,19 +262,34 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
     }, 4500);
   };
 
+  const formCalculatedStock = useMemo(
+    () =>
+      formSizes.reduce((sum, sz) => {
+        const val = Math.max(
+          0,
+          Math.min(PRODUCT_LIMITS.maxStock, Math.floor(Number(formStockBySize[sz] || 0)))
+        );
+        return sum + val;
+      }, 0),
+    [formSizes, formStockBySize]
+  );
+
   const openCreateModal = () => {
+    const newId = `prenda-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     setEditingProduct(null);
+    setDraftProductId(newId);
     setProductModalError(null);
-    setUploadedSizeKb(null);
+    setImageUploadNotice(null);
     setShowUrlField(false);
+    setNewImageUrlInput('');
     setFormSku(generateSuggestedSku('Vestidos', products.map((p) => p.sku)));
     setFormName('');
     setFormCategory('Vestidos');
     setFormPrice('220000');
     setFormColor('Marfil');
-    setFormStock('10');
     setFormSizes(['XS', 'S', 'M', 'L']);
-    setFormImageUrl(STUDIO_GALLERY_PRESETS[0].url);
+    setFormStockBySize({ XS: '2', S: '3', M: '3', L: '2', XL: '0', Única: '0' });
+    setFormImages([STUDIO_GALLERY_PRESETS[0].url]);
     setFormDescription('');
     setFormFeatured(true);
     setFormActive(true);
@@ -180,9 +298,11 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
 
   const openEditModal = (p: Product, suggestSkuIfMissing = false) => {
     setEditingProduct(p);
+    setDraftProductId(p.id);
     setProductModalError(null);
-    setUploadedSizeKb(null);
-    setShowUrlField(!p.imageUrl.startsWith('data:'));
+    setImageUploadNotice(null);
+    setShowUrlField(false);
+    setNewImageUrlInput('');
     setFormSku(
       p.sku ||
         (suggestSkuIfMissing
@@ -193,26 +313,102 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
     setFormCategory(p.category);
     setFormPrice(String(p.price));
     setFormColor(p.color);
-    setFormStock(String(p.stock));
-    setFormSizes(p.sizes);
-    setFormImageUrl(p.imageUrl);
+    const activeSizes = p.sizes.length > 0 ? p.sizes : ['Única'];
+    setFormSizes(activeSizes);
+
+    const initialMap: Record<string, string> = {
+      XS: '0',
+      S: '0',
+      M: '0',
+      L: '0',
+      XL: '0',
+      Única: '0',
+    };
+    if (p.stockBySize && Object.keys(p.stockBySize).length > 0) {
+      for (const sz of activeSizes) {
+        initialMap[sz] = String(Math.max(0, Math.floor(Number(p.stockBySize[sz] ?? 0))));
+      }
+    } else {
+      const total = Math.max(0, Math.floor(Number(p.stock || 0)));
+      const base = Math.floor(total / activeSizes.length);
+      let remainder = total % activeSizes.length;
+      for (const sz of activeSizes) {
+        const extra = remainder > 0 ? 1 : 0;
+        if (remainder > 0) remainder -= 1;
+        initialMap[sz] = String(base + extra);
+      }
+    }
+    setFormStockBySize(initialMap);
+
+    const gallery = getProductImages(p);
+    setFormImages(gallery.length > 0 ? gallery : [STUDIO_GALLERY_PRESETS[0].url]);
     setFormDescription(p.description);
     setFormFeatured(p.featured);
     setFormActive(p.active);
     setProductModalOpen(true);
   };
 
-  const processSelectedImageFile = async (file: File) => {
+  const processSelectedImageFiles = async (fileList: FileList | File[]) => {
+    const files = Array.from(fileList);
+    if (files.length === 0) return;
+
+    const remainingSlots = PRODUCT_LIMITS.maxImages - formImages.length;
+    if (remainingSlots <= 0) {
+      setProductModalError(
+        `Cada prenda admite máximo ${PRODUCT_LIMITS.maxImages} fotografías. Elimina una para agregar otra.`
+      );
+      return;
+    }
+
+    const filesToProcess = files.slice(0, remainingSlots);
+    const targetProdId = editingProduct?.id || draftProductId || 'prenda-nueva';
+
     setProductModalError(null);
     setImageUploading(true);
     try {
-      const { dataUrl, sizeKb } = await compressImageFileForCatalog(file);
-      setFormImageUrl(dataUrl);
-      setUploadedSizeKb(sizeKb);
+      const uploadedUrls: string[] = [];
+      let usedStorageCount = 0;
+      let usedFallbackCount = 0;
+      let lastSizeKb = 0;
+      let lastFallbackReason = '';
+
+      for (const file of filesToProcess) {
+        const result = await uploadProductImage(file, targetProdId);
+        uploadedUrls.push(result.url);
+        lastSizeKb = result.sizeKb;
+        if (result.source === 'storage') {
+          usedStorageCount += 1;
+        } else {
+          usedFallbackCount += 1;
+          if (result.fallbackReason) lastFallbackReason = result.fallbackReason;
+        }
+      }
+
+      setFormImages((prev) => {
+        const next = [...prev];
+        for (const u of uploadedUrls) {
+          if (!next.includes(u) && next.length < PRODUCT_LIMITS.maxImages) {
+            next.push(u);
+          }
+        }
+        return next;
+      });
+
+      if (usedFallbackCount > 0) {
+        setImageUploadNotice({
+          kind: 'fallback',
+          text: `Firebase Storage no respondió (${lastFallbackReason || 'pendiente de activar'}). Guardamos ${usedFallbackCount === 1 ? 'la foto optimizada' : `${usedFallbackCount} fotos optimizadas`} en WebP comprimido (${lastSizeKb} KB) para que tus clientas la vean al instante.`,
+        });
+      } else if (usedStorageCount > 0) {
+        setImageUploadNotice({
+          kind: 'storage',
+          text: `${usedStorageCount === 1 ? 'Foto subida' : `${usedStorageCount} fotos subidas`} en WebP a Firebase Storage (${lastSizeKb} KB).`,
+        });
+      }
       setShowUrlField(false);
     } catch (err) {
       setProductModalError(
-        err instanceof Error ? err.message : 'No pudimos cargar la imagen seleccionada.'
+        err instanceof Error ? err.message : 'No pudimos cargar las imágenes seleccionadas.'
       );
     } finally {
       setImageUploading(false);
@@ -222,11 +418,55 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
     }
   };
 
+  const handleMoveImage = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    setFormImages((prev) => {
+      if (target < 0 || target >= prev.length) return prev;
+      const next = [...prev];
+      const temp = next[index];
+      next[index] = next[target];
+      next[target] = temp;
+      return next;
+    });
+  };
+
+  const handleRemoveImage = (index: number) => {
+    if (formImages.length <= 1) {
+      setProductModalError('La prenda debe conservar al menos 1 fotografía.');
+      return;
+    }
+    setProductModalError(null);
+    setFormImages((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const handleAddUrlImage = () => {
+    setProductModalError(null);
+    const trimmed = newImageUrlInput.trim();
+    if (trimmed.length < PRODUCT_LIMITS.imageUrlMin) {
+      setProductModalError('Pega un enlace URL válido para la fotografía.');
+      return;
+    }
+    if (formImages.length >= PRODUCT_LIMITS.maxImages) {
+      setProductModalError(`Máximo ${PRODUCT_LIMITS.maxImages} fotografías por prenda.`);
+      return;
+    }
+    if (formImages.includes(trimmed)) {
+      setProductModalError('Esta fotografía ya forma parte de la galería.');
+      return;
+    }
+    setFormImages((prev) => [...prev, trimmed]);
+    setNewImageUrlInput('');
+  };
+
   const toggleSize = (size: string) => {
     setFormSizes((prev) => {
       if (prev.includes(size)) {
         return prev.length > 1 ? prev.filter((s) => s !== size) : prev;
       }
+      setFormStockBySize((cur) => ({
+        ...cur,
+        [size]: cur[size] ?? '0',
+      }));
       return [...prev, size];
     });
   };
@@ -240,6 +480,22 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
       );
       return;
     }
+    if (formImages.length === 0) {
+      setProductModalError('Agrega al menos 1 fotografía para la prenda.');
+      return;
+    }
+
+    const stockBySizePayload: Record<string, number> = {};
+    for (const sz of formSizes) {
+      stockBySizePayload[sz] = Math.max(
+        0,
+        Math.min(PRODUCT_LIMITS.maxStock, Math.floor(Number(formStockBySize[sz] || 0)))
+      );
+    }
+    const calculatedTotalStock = Math.min(
+      PRODUCT_LIMITS.maxStock,
+      Object.values(stockBySizePayload).reduce((sum, n) => sum + n, 0)
+    );
 
     setBusyAction(true);
     try {
@@ -249,9 +505,11 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
         category: formCategory,
         price: Number(formPrice),
         color: formColor,
-        stock: Number(formStock),
+        stock: calculatedTotalStock,
         sizes: formSizes,
-        imageUrl: formImageUrl,
+        stockBySize: stockBySizePayload,
+        imageUrl: formImages[0],
+        images: formImages,
         description: formDescription,
         featured: formFeatured,
         active: formActive,
@@ -262,7 +520,7 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
         savedProduct = { ...editingProduct, ...payload };
         showNotice('ok', `Prenda ${cleanedSku} actualizada en tiempo real.`);
       } else {
-        savedProduct = await createProduct(payload);
+        savedProduct = await createProduct(payload, draftProductId || undefined);
         showNotice('ok', `Prenda ${cleanedSku} publicada en Firebase.`);
       }
       setProductModalOpen(false);
@@ -320,12 +578,34 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
     e.preventDefault();
     setBusyAction(true);
     try {
+      let launchTimestamp: Timestamp | null = null;
+      if (setLaunchDateStr.trim()) {
+        const parsedDate = new Date(setLaunchDateStr);
+        if (Number.isNaN(parsedDate.getTime())) {
+          throw new Error('La fecha y hora de lanzamiento no es válida.');
+        }
+        launchTimestamp = Timestamp.fromDate(parsedDate);
+      }
+
       await updateStoreSettings({
         announcementText: setAnnouncement,
         heroTitle: setHeroTitle,
         heroSubtitle: setHeroSubtitle,
         freeShippingThreshold: Number(setFreeThreshold),
         shippingFee: Number(setShippingFee),
+        launchMode: setLaunchMode,
+        launchDate: launchTimestamp,
+        metaPixelId: setMetaPixelId.trim() || undefined,
+        gaMeasurementId: setGaMeasurementId.trim().toUpperCase() || undefined,
+        deliveryTimeText: setDeliveryTimeText.trim() || DEFAULT_DELIVERY_TIME_TEXT,
+        sizeGuide: setSizeGuide,
+        legalBusinessName: setLegalBusinessName,
+        legalDocumentId: setLegalDocumentId,
+        legalAddress: setLegalAddress,
+        legalCity: setLegalCity,
+        legalEmail: setLegalEmail,
+        legalPhone: setLegalPhone,
+        legalUpdatedAt: setLegalUpdatedAt,
       });
       showNotice('ok', 'Configuración de tienda actualizada en vivo.');
     } catch (err) {
@@ -336,6 +616,35 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
     } finally {
       setBusyAction(false);
     }
+  };
+
+  const handleExportWaitlistCsv = () => {
+    if (waitlistEntries.length === 0) return;
+    const escapeCell = (val: string) => `"${val.replace(/"/g, '""')}"`;
+    const rows = [
+      ['Nombre', 'WhatsApp', 'Consentimiento', 'Fecha de registro'].map(escapeCell).join(','),
+      ...waitlistEntries.map((entry) =>
+        [
+          entry.name,
+          `+${entry.phone}`,
+          entry.consent ? 'Sí' : 'No',
+          formatDateTime(entry.createdAt),
+        ]
+          .map((cell) => escapeCell(String(cell)))
+          .join(',')
+      ),
+    ];
+    const csvContent = `\uFEFF${rows.join('\n')}`;
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'mia-store-lista-espera.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showNotice('ok', 'Archivo CSV de lista de espera descargado.');
   };
 
   const handleAddStaff = async (e: React.FormEvent) => {
@@ -458,6 +767,14 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
     };
   }, [orders, products, customers]);
 
+  const productsById = useMemo(() => {
+    const map = new Map<string, Product>();
+    for (const p of products) {
+      map.set(p.id, p);
+    }
+    return map;
+  }, [products]);
+
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return products.filter((p) => {
@@ -493,6 +810,7 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
     { id: 'inventario', label: 'Inventario', icon: ShoppingBag },
     { id: 'pedidos', label: 'Pedidos', icon: Package },
     { id: 'clientas', label: 'Clientas', icon: Users },
+    { id: 'waitlist', label: 'Lista de espera', icon: Clock },
     ...(isOwner ? [{ id: 'equipo' as const, label: 'Equipo', icon: ShieldCheck }] : []),
     { id: 'tienda', label: 'Configuración', icon: Settings },
   ];
@@ -896,63 +1214,95 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
                 </div>
               ) : (
                 <div className="bg-white border border-[#EAE0DA] rounded-2xl overflow-hidden divide-y divide-[#EAE0DA]">
-                  {filteredProducts.map((p) => (
-                    <div
-                      key={p.id}
-                      className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-[#FBF9F7] transition-colors"
-                    >
-                      <div className="flex items-center gap-4 min-w-0">
-                        <div className="w-16 h-20 rounded-xl overflow-hidden bg-[#F8EFEA] border border-[#EAE0DA] shrink-0">
-                          <ResilientImage
-                            src={p.imageUrl}
-                            alt={p.name}
-                            fallbackLabel={p.name}
-                            className="w-full h-full object-cover"
-                          />
+                  {filteredProducts.map((p) => {
+                    const hasSizeStock = Boolean(
+                      p.stockBySize && Object.keys(p.stockBySize).length > 0
+                    );
+                    return (
+                      <div
+                        key={p.id}
+                        className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-[#FBF9F7] transition-colors"
+                      >
+                        <div className="flex items-center gap-4 min-w-0">
+                          <div className="w-16 h-20 rounded-xl overflow-hidden bg-[#F8EFEA] border border-[#EAE0DA] shrink-0">
+                            <ResilientImage
+                              src={p.imageUrl}
+                              alt={p.name}
+                              fallbackLabel={p.name}
+                              className="w-full h-full object-cover"
+                            />
+                          </div>
+                          <div className="min-w-0 space-y-1">
+                            <p className="text-xs font-mono text-[#8C5E58]">
+                              {p.sku ? `Cód. ${p.sku}` : 'Sin código asignado'}
+                            </p>
+                            <p className="text-sm font-semibold text-[#231F20] truncate">
+                              {p.name}
+                            </p>
+                            <p className="text-xs text-[#756661]">
+                              {p.category} · {p.color} · Tallas: {p.sizes.join(', ')}
+                            </p>
+                            {hasSizeStock ? (
+                              <p className="text-[11px] text-[#574B47] tabular-nums">
+                                Por talla:{' '}
+                                {p.sizes
+                                  .map((sz) => `${sz}: ${p.stockBySize?.[sz] ?? 0}`)
+                                  .join(' · ')}
+                              </p>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => openEditModal(p)}
+                                className="inline-flex items-center gap-1 text-[11px] font-medium text-[#9A3412] bg-[#FFF7ED] border border-[#FED7AA] px-2 py-0.5 rounded-md hover:bg-[#FFEDD5]"
+                              >
+                                <AlertTriangle className="w-3 h-3 shrink-0" />
+                                <span>Asigna stock por talla</span>
+                              </button>
+                            )}
+                            <p className="text-sm font-medium text-[#231F20] tabular-nums">
+                              {formatCOP(p.price)}{' '}
+                              <span className="text-xs font-normal text-[#756661]">
+                                · {p.active ? 'Publicada' : 'Oculta'}
+                              </span>
+                            </p>
+                          </div>
                         </div>
-                        <div className="min-w-0 space-y-1">
-                          <p className="text-xs font-mono text-[#8C5E58]">
-                            {p.sku ? `Cód. ${p.sku}` : 'Sin código asignado'}
-                          </p>
-                          <p className="text-sm font-semibold text-[#231F20] truncate">
-                            {p.name}
-                          </p>
-                          <p className="text-xs text-[#756661]">
-                            {p.category} · {p.color} · Tallas: {p.sizes.join(', ')}
-                          </p>
-                          <p className="text-sm font-medium text-[#231F20] tabular-nums">
-                            {formatCOP(p.price)}{' '}
-                            <span className="text-xs font-normal text-[#756661]">
-                              · {p.active ? 'Publicada' : 'Oculta'}
-                            </span>
-                          </p>
-                        </div>
-                      </div>
 
-                      <div className="flex flex-wrap items-center justify-between md:justify-end gap-3 shrink-0">
-                        <div className="inline-flex items-center border border-[#EAE0DA] rounded-xl bg-white">
-                          <button
-                            type="button"
-                            disabled={isUsingStarterPreview || p.stock <= 0}
-                            onClick={() => adjustProductStock(p.id, p.stock - 1)}
-                            aria-label={`Reducir stock de ${p.name}`}
-                            className="min-h-[44px] min-w-[44px] flex items-center justify-center text-[#231F20] hover:bg-[#F8EFEA] disabled:opacity-40 rounded-l-xl"
-                          >
-                            <Minus className="w-3.5 h-3.5" />
-                          </button>
-                          <span className="px-3 text-xs font-medium tabular-nums min-w-[64px] text-center">
-                            {p.stock} uds
-                          </span>
-                          <button
-                            type="button"
-                            disabled={isUsingStarterPreview}
-                            onClick={() => adjustProductStock(p.id, p.stock + 1)}
-                            aria-label={`Aumentar stock de ${p.name}`}
-                            className="min-h-[44px] min-w-[44px] flex items-center justify-center text-[#231F20] hover:bg-[#F8EFEA] disabled:opacity-40 rounded-r-xl"
-                          >
-                            <Plus className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                        <div className="flex flex-wrap items-center justify-between md:justify-end gap-3 shrink-0">
+                          {hasSizeStock ? (
+                            <button
+                              type="button"
+                              onClick={() => openEditModal(p)}
+                              className="min-h-[44px] px-3.5 rounded-xl border border-[#EAE0DA] bg-white text-xs font-medium text-[#231F20] hover:bg-[#F8EFEA] tabular-nums"
+                              title="Editar stock por talla"
+                            >
+                              {p.stock} uds totales · Editar tallas
+                            </button>
+                          ) : (
+                            <div className="inline-flex items-center border border-[#EAE0DA] rounded-xl bg-white">
+                              <button
+                                type="button"
+                                disabled={isUsingStarterPreview || p.stock <= 0}
+                                onClick={() => adjustProductStock(p.id, p.stock - 1)}
+                                aria-label={`Reducir stock de ${p.name}`}
+                                className="min-h-[44px] min-w-[44px] flex items-center justify-center text-[#231F20] hover:bg-[#F8EFEA] disabled:opacity-40 rounded-l-xl"
+                              >
+                                <Minus className="w-3.5 h-3.5" />
+                              </button>
+                              <span className="px-3 text-xs font-medium tabular-nums min-w-[64px] text-center">
+                                {p.stock} uds
+                              </span>
+                              <button
+                                type="button"
+                                disabled={isUsingStarterPreview}
+                                onClick={() => adjustProductStock(p.id, p.stock + 1)}
+                                aria-label={`Aumentar stock de ${p.name}`}
+                                className="min-h-[44px] min-w-[44px] flex items-center justify-center text-[#231F20] hover:bg-[#F8EFEA] disabled:opacity-40 rounded-r-xl"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
 
                         <div className="flex items-center gap-1.5">
                           <button
@@ -1013,9 +1363,10 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
                             </button>
                           )}
                         </div>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1061,11 +1412,42 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
                       order.status === 'enviado' ||
                       order.status === 'entregado';
 
+                    const expectedSubtotal = order.items.reduce((sum, item) => {
+                      const liveProd = productsById.get(item.productId);
+                      const unitPrice = liveProd ? liveProd.price : item.price;
+                      return sum + unitPrice * item.quantity;
+                    }, 0);
+                    const hasSubtotalMismatch = Math.abs(expectedSubtotal - order.subtotal) > 1;
+                    const maxAllowedDiscount = Math.ceil(order.subtotal * 0.1);
+                    const hasExcessiveDiscount = order.discountAmount > maxAllowedDiscount;
+                    const hasTotalAlert = hasSubtotalMismatch || hasExcessiveDiscount;
+
                     return (
                       <div
                         key={order.id}
                         className="bg-white border border-[#EAE0DA] rounded-2xl p-5 space-y-4"
                       >
+                        {hasTotalAlert && (
+                          <div className="bg-[#FEF2F2] border border-[#FECACA] rounded-xl px-4 py-3 flex flex-col gap-1 text-xs text-[#B91C1C]">
+                            <div className="flex items-center gap-2 font-semibold">
+                              <AlertTriangle className="w-4 h-4 shrink-0" />
+                              <span>Revisar total: precio no coincide con el catálogo</span>
+                            </div>
+                            {hasSubtotalMismatch && (
+                              <p className="tabular-nums pl-6">
+                                Subtotal guardado: {formatCOP(order.subtotal)} · Subtotal catálogo actual:{' '}
+                                {formatCOP(expectedSubtotal)}
+                              </p>
+                            )}
+                            {hasExcessiveDiscount && (
+                              <p className="tabular-nums pl-6">
+                                Descuento guardado ({formatCOP(order.discountAmount)}) supera el 10% del subtotal (
+                                {formatCOP(maxAllowedDiscount)}).
+                              </p>
+                            )}
+                          </div>
+                        )}
+
                         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 pb-3 border-b border-[#EAE0DA]">
                           <div className="space-y-1">
                             <p className="font-mono text-sm font-semibold text-[#231F20] tabular-nums">
@@ -1157,7 +1539,18 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
                                   key={opt.value}
                                   type="button"
                                   disabled={busyAction}
-                                  onClick={() => handleChangeOrderStatus(order.id, opt.value)}
+                                  onClick={() => {
+                                    if (opt.value === 'pagado' && hasTotalAlert && !active) {
+                                      setPaidConfirmTarget({
+                                        order,
+                                        expectedSubtotal,
+                                        hasSubtotalMismatch,
+                                        hasExcessiveDiscount,
+                                      });
+                                      return;
+                                    }
+                                    handleChangeOrderStatus(order.id, opt.value);
+                                  }}
                                   className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
                                     active
                                       ? 'bg-[#231F20] text-[#FBF9F7] border-[#231F20]'
@@ -1270,6 +1663,111 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
             </div>
           )}
 
+          {/* TAB: LISTA DE ESPERA */}
+          {tab === 'waitlist' && (
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white border border-[#EAE0DA] rounded-2xl p-5">
+                <div className="space-y-1">
+                  <p className="text-xs text-[#756661]">Total de inscritas</p>
+                  <p className="text-3xl font-semibold text-[#231F20] tabular-nums">
+                    {waitlistEntries.length}
+                  </p>
+                  <p className="text-xs text-[#756661]">
+                    Personas registradas desde la portada Próximamente con consentimiento confirmado.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={waitlistEntries.length === 0}
+                  onClick={handleExportWaitlistCsv}
+                  className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium inline-flex items-center justify-center gap-2 hover:bg-[#3A3335] disabled:opacity-40 shrink-0"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Exportar CSV</span>
+                </button>
+              </div>
+
+              {waitlistLoading ? (
+                <div className="space-y-3">
+                  <div className="h-16 rounded-2xl bg-[#F8EFEA] animate-pulse" />
+                  <div className="h-16 rounded-2xl bg-[#F8EFEA] animate-pulse" />
+                </div>
+              ) : waitlistEntries.length === 0 ? (
+                <div className="bg-white border border-[#EAE0DA] rounded-2xl p-10 text-center space-y-2">
+                  <Clock className="w-6 h-6 mx-auto text-[#8C5E58]" strokeWidth={1.5} />
+                  <p className="font-display text-2xl text-[#231F20]">
+                    Sin registros en lista de espera aún
+                  </p>
+                  <p className="text-sm text-[#756661]">
+                    Cuando la tienda esté en modo Próximamente, quienes dejen su WhatsApp aparecerán aquí al instante.
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-white border border-[#EAE0DA] rounded-2xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-[#EAE0DA] bg-[#FBF9F7] text-xs font-medium text-[#756661]">
+                          <th className="py-3.5 px-4">Nombre</th>
+                          <th className="py-3.5 px-4">WhatsApp</th>
+                          <th className="py-3.5 px-4">Fecha de registro</th>
+                          <th className="py-3.5 px-4 text-right">Acciones</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#EAE0DA] text-sm">
+                        {waitlistEntries.map((entry) => {
+                          const waText = encodeURIComponent(
+                            `Hola ${entry.name}, gracias por registrarte en la lista de espera de Mía Store. ¡Muy pronto abrimos!`
+                          );
+                          const waHref = `https://wa.me/${entry.phone}?text=${waText}`;
+                          return (
+                            <tr
+                              key={entry.id}
+                              className="hover:bg-[#FBF9F7]/70 transition-colors"
+                            >
+                              <td className="py-3.5 px-4 font-medium text-[#231F20]">
+                                {entry.name}
+                              </td>
+                              <td className="py-3.5 px-4 font-mono text-xs text-[#574B47] tabular-nums">
+                                {formatColombianDisplayPhone(entry.phone)}
+                              </td>
+                              <td className="py-3.5 px-4 text-xs text-[#756661] tabular-nums">
+                                {formatDateTime(entry.createdAt)}
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <div className="flex items-center justify-end gap-2">
+                                  <a
+                                    href={waHref}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[#EAE0DA] bg-[#F8EFEA] text-xs font-medium text-[#231F20] inline-flex items-center gap-1.5 hover:bg-[#EAE0DA] whitespace-nowrap"
+                                  >
+                                    <MessageCircle className="w-3.5 h-3.5" />
+                                    <span>Abrir WhatsApp</span>
+                                  </a>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteWaitlistEntry(entry.id)}
+                                    title="Eliminar de la lista"
+                                    aria-label={`Eliminar a ${entry.name} de la lista`}
+                                    className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg border border-[#EAE0DA] text-[#B91C1C] hover:bg-[#FEF2F2]"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* TAB: EQUIPO (MULTI-ADMIN) */}
           {tab === 'equipo' && isOwner && (
             <div className="space-y-6 max-w-2xl">
@@ -1369,91 +1867,477 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
 
           {/* TAB: CONFIGURACIÓN DE TIENDA */}
           {tab === 'tienda' && (
-            <form
-              onSubmit={handleSaveSettings}
-              className="bg-white border border-[#EAE0DA] rounded-2xl p-6 max-w-2xl space-y-5"
-            >
-              <div className="space-y-1">
-                <h2 className="font-display text-2xl text-[#231F20]">
-                  Portada y Reglas de Envío
-                </h2>
-                <p className="text-xs text-[#756661]">
-                  Actualiza los textos principales y tarifas sin modificar el código.
-                </p>
-              </div>
+            <form onSubmit={handleSaveSettings} className="space-y-6 max-w-2xl">
+              {/* Modo Próximamente & Lanzamiento */}
+              <div className="bg-white border border-[#EAE0DA] rounded-2xl p-6 space-y-5">
+                <div className="space-y-1">
+                  <h2 className="font-display text-2xl text-[#231F20]">
+                    Modo de Tienda y Lanzamiento
+                  </h2>
+                  <p className="text-xs text-[#756661]">
+                    Controla si el público ve la portada de Próximamente con lista de espera o el catálogo abierto. Como administradora siempre ves la tienda completa.
+                  </p>
+                </div>
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-[#231F20]" htmlFor="set-ann">
-                  Barra de anuncio superior
-                </label>
-                <input
-                  id="set-ann"
-                  type="text"
-                  maxLength={140}
-                  value={setAnnouncement}
-                  onChange={(e) => setSetAnnouncement(e.target.value)}
-                  className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-[#231F20]" htmlFor="set-hero-title">
-                  Titular principal de portada
-                </label>
-                <input
-                  id="set-hero-title"
-                  type="text"
-                  required
-                  maxLength={100}
-                  value={setHeroTitle}
-                  onChange={(e) => setSetHeroTitle(e.target.value)}
-                  className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-[#231F20]" htmlFor="set-hero-sub">
-                  Subtítulo editorial
-                </label>
-                <textarea
-                  id="set-hero-sub"
-                  rows={3}
-                  required
-                  maxLength={240}
-                  value={setHeroSubtitle}
-                  onChange={(e) => setSetHeroSubtitle(e.target.value)}
-                  className="w-full p-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-[#231F20]" htmlFor="set-free">
-                    Envío gratis desde (COP)
+                  <label className="text-xs font-medium text-[#231F20]" htmlFor="set-launch-mode">
+                    Estado público de la tienda
+                  </label>
+                  <select
+                    id="set-launch-mode"
+                    value={setLaunchMode}
+                    onChange={(e) => setSetLaunchMode(e.target.value as LaunchMode)}
+                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
+                  >
+                    <option value="proximamente">
+                      Próximamente (Portada minimalista + Lista de espera)
+                    </option>
+                    <option value="abierta">Abierta (Catálogo público activo)</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-[#231F20]" htmlFor="set-launch-date">
+                    Fecha y hora de lanzamiento (opcional para cuenta regresiva)
+                  </label>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      id="set-launch-date"
+                      type="datetime-local"
+                      value={setLaunchDateStr}
+                      onChange={(e) => setSetLaunchDateStr(e.target.value)}
+                      className="flex-1 min-w-[220px] min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
+                    />
+                    {setLaunchDateStr && (
+                      <button
+                        type="button"
+                        onClick={() => setSetLaunchDateStr('')}
+                        className="min-h-[44px] px-3.5 rounded-xl border border-[#EAE0DA] bg-white text-xs font-medium text-[#574B47] hover:bg-[#F8EFEA]"
+                      >
+                        Quitar fecha
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-[#756661]">
+                    Si defines una fecha, la portada Próximamente mostrará una cuenta regresiva (días, horas y minutos). Si la dejas vacía, la cuenta regresiva se oculta.
+                  </p>
+                </div>
+              </div>
+
+              {/* Portada y Reglas de Envío */}
+              <div className="bg-white border border-[#EAE0DA] rounded-2xl p-6 space-y-5">
+                <div className="space-y-1">
+                  <h2 className="font-display text-2xl text-[#231F20]">
+                    Portada y Reglas de Envío
+                  </h2>
+                  <p className="text-xs text-[#756661]">
+                    Actualiza los textos principales y tarifas sin modificar el código.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-[#231F20]" htmlFor="set-ann">
+                    Barra de anuncio superior
                   </label>
                   <input
-                    id="set-free"
-                    type="number"
-                    min={0}
-                    required
-                    value={setFreeThreshold}
-                    onChange={(e) => setSetFreeThreshold(e.target.value)}
-                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] font-mono text-sm focus:outline-none focus:border-[#231F20]"
+                    id="set-ann"
+                    type="text"
+                    maxLength={140}
+                    value={setAnnouncement}
+                    onChange={(e) => setSetAnnouncement(e.target.value)}
+                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
                   />
                 </div>
+
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-[#231F20]" htmlFor="set-fee">
-                    Tarifa estándar de envío (COP)
+                  <label className="text-xs font-medium text-[#231F20]" htmlFor="set-hero-title">
+                    Titular principal de portada
                   </label>
                   <input
-                    id="set-fee"
-                    type="number"
-                    min={0}
+                    id="set-hero-title"
+                    type="text"
                     required
-                    value={setShippingFee}
-                    onChange={(e) => setSetShippingFee(e.target.value)}
-                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] font-mono text-sm focus:outline-none focus:border-[#231F20]"
+                    maxLength={100}
+                    value={setHeroTitle}
+                    onChange={(e) => setSetHeroTitle(e.target.value)}
+                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
                   />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-[#231F20]" htmlFor="set-hero-sub">
+                    Subtítulo editorial
+                  </label>
+                  <textarea
+                    id="set-hero-sub"
+                    rows={3}
+                    required
+                    maxLength={240}
+                    value={setHeroSubtitle}
+                    onChange={(e) => setSetHeroSubtitle(e.target.value)}
+                    className="w-full p-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-[#231F20]" htmlFor="set-free">
+                      Envío gratis desde (COP)
+                    </label>
+                    <input
+                      id="set-free"
+                      type="number"
+                      min={0}
+                      required
+                      value={setFreeThreshold}
+                      onChange={(e) => setSetFreeThreshold(e.target.value)}
+                      className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] font-mono text-sm focus:outline-none focus:border-[#231F20]"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-[#231F20]" htmlFor="set-fee">
+                      Tarifa estándar de envío (COP)
+                    </label>
+                    <input
+                      id="set-fee"
+                      type="number"
+                      min={0}
+                      required
+                      value={setShippingFee}
+                      onChange={(e) => setSetShippingFee(e.target.value)}
+                      className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] font-mono text-sm focus:outline-none focus:border-[#231F20]"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Píxeles de Medición */}
+              <div className="bg-white border border-[#EAE0DA] rounded-2xl p-6 space-y-5">
+                <div className="space-y-1">
+                  <h2 className="font-display text-2xl text-[#231F20] flex items-center gap-2">
+                    <Activity className="w-5 h-5 text-[#8C5E58]" strokeWidth={1.6} />
+                    <span>Píxeles de medición</span>
+                  </h2>
+                  <p className="text-xs text-[#574B47] leading-relaxed">
+                    Conecta tus cuentas de analítica para medir campañas. Cuando un ID está activo, se disparan automáticamente los eventos PageView, ViewContent, AddToCart, InitiateCheckout, Purchase y Lead (lista de espera). Si dejas el campo vacío, no se carga ningún script externo.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-[#231F20]" htmlFor="set-meta-pixel">
+                      Meta Pixel ID (Facebook / Instagram)
+                    </label>
+                    <input
+                      id="set-meta-pixel"
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={20}
+                      value={setMetaPixelId}
+                      onChange={(e) => setSetMetaPixelId(e.target.value.replace(/\D/g, ''))}
+                      placeholder="Ej. 123456789012345"
+                      className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] font-mono text-sm focus:outline-none focus:border-[#231F20]"
+                    />
+                    <p className="text-[11px] text-[#756661]">Solo dígitos (10 a 20 números).</p>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-[#231F20]" htmlFor="set-ga4-id">
+                      Google Analytics 4 (Measurement ID)
+                    </label>
+                    <input
+                      id="set-ga4-id"
+                      type="text"
+                      maxLength={20}
+                      value={setGaMeasurementId}
+                      onChange={(e) => setSetGaMeasurementId(e.target.value.toUpperCase())}
+                      placeholder="Ej. G-ABC1234567"
+                      className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] font-mono text-sm uppercase focus:outline-none focus:border-[#231F20]"
+                    />
+                    <p className="text-[11px] text-[#756661]">Formato G-XXXXXXXX.</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Guía de Tallas y Tiempos de Entrega */}
+              <div className="bg-white border border-[#EAE0DA] rounded-2xl p-6 space-y-5">
+                <div className="space-y-1">
+                  <h2 className="font-display text-2xl text-[#231F20] flex items-center gap-2">
+                    <Ruler className="w-5 h-5 text-[#8C5E58]" strokeWidth={1.6} />
+                    <span>Guía de Tallas y Tiempos de Entrega</span>
+                  </h2>
+                  <p className="text-xs text-[#574B47]">
+                    Esta información se muestra dentro del detalle de cada prenda y en los Términos
+                    y Condiciones.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-[#231F20]" htmlFor="set-delivery-time">
+                    Tiempo estimado de entrega
+                  </label>
+                  <input
+                    id="set-delivery-time"
+                    type="text"
+                    maxLength={SETTINGS_LIMITS.deliveryTimeMax}
+                    value={setDeliveryTimeText}
+                    onChange={(e) => setSetDeliveryTimeText(e.target.value)}
+                    placeholder={DEFAULT_DELIVERY_TIME_TEXT}
+                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
+                  />
+                </div>
+
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-[#231F20]">
+                      Tabla de medidas (cm)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSetSizeGuide(DEFAULT_SIZE_GUIDE)}
+                      className="text-[11px] text-[#8C5E58] hover:text-[#231F20] underline underline-offset-4"
+                    >
+                      Restaurar medidas base
+                    </button>
+                  </div>
+                  <div className="overflow-x-auto border border-[#EAE0DA] rounded-xl">
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="bg-[#F8EFEA] text-[#574B47] border-b border-[#EAE0DA]">
+                          <th className="py-2 px-3 font-medium">Talla</th>
+                          <th className="py-2 px-3 font-medium">Busto</th>
+                          <th className="py-2 px-3 font-medium">Cintura</th>
+                          <th className="py-2 px-3 font-medium">Cadera</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#EAE0DA]">
+                        {setSizeGuide.map((row, rowIdx) => (
+                          <tr key={row.size}>
+                            <td className="py-2 px-3 font-semibold text-[#231F20]">{row.size}</td>
+                            <td className="py-1.5 px-2">
+                              <input
+                                type="text"
+                                maxLength={32}
+                                aria-label={`Busto talla ${row.size}`}
+                                value={row.bust}
+                                onChange={(e) =>
+                                  setSetSizeGuide((prev) =>
+                                    prev.map((r, i) =>
+                                      i === rowIdx ? { ...r, bust: e.target.value } : r
+                                    )
+                                  )
+                                }
+                                className="w-full min-h-[36px] px-2.5 rounded-lg bg-[#FBF9F7] border border-[#EAE0DA] text-xs focus:outline-none focus:border-[#231F20]"
+                              />
+                            </td>
+                            <td className="py-1.5 px-2">
+                              <input
+                                type="text"
+                                maxLength={32}
+                                aria-label={`Cintura talla ${row.size}`}
+                                value={row.waist}
+                                onChange={(e) =>
+                                  setSetSizeGuide((prev) =>
+                                    prev.map((r, i) =>
+                                      i === rowIdx ? { ...r, waist: e.target.value } : r
+                                    )
+                                  )
+                                }
+                                className="w-full min-h-[36px] px-2.5 rounded-lg bg-[#FBF9F7] border border-[#EAE0DA] text-xs focus:outline-none focus:border-[#231F20]"
+                              />
+                            </td>
+                            <td className="py-1.5 px-2">
+                              <input
+                                type="text"
+                                maxLength={32}
+                                aria-label={`Cadera talla ${row.size}`}
+                                value={row.hip}
+                                onChange={(e) =>
+                                  setSetSizeGuide((prev) =>
+                                    prev.map((r, i) =>
+                                      i === rowIdx ? { ...r, hip: e.target.value } : r
+                                    )
+                                  )
+                                }
+                                className="w-full min-h-[36px] px-2.5 rounded-lg bg-[#FBF9F7] border border-[#EAE0DA] text-xs focus:outline-none focus:border-[#231F20]"
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              {/* Datos Legales (Colombia) */}
+              <div className="bg-white border border-[#EAE0DA] rounded-2xl p-6 space-y-5">
+                <div className="space-y-1">
+                  <h2 className="font-display text-2xl text-[#231F20] flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-[#8C5E58]" strokeWidth={1.6} />
+                    <span>Datos legales (Colombia)</span>
+                  </h2>
+                  <p className="text-xs text-[#574B47] leading-relaxed">
+                    Completa estos campos para personalizar automáticamente las páginas{' '}
+                    <a href="#privacidad" className="underline underline-offset-4 text-[#231F20]">
+                      #privacidad
+                    </a>
+                    ,{' '}
+                    <a href="#terminos" className="underline underline-offset-4 text-[#231F20]">
+                      #terminos
+                    </a>{' '}
+                    y{' '}
+                    <a href="#cambios" className="underline underline-offset-4 text-[#231F20]">
+                      #cambios
+                    </a>
+                    .
+                  </p>
+                </div>
+
+                {[
+                  setLegalBusinessName,
+                  setLegalDocumentId,
+                  setLegalAddress,
+                  setLegalCity,
+                  setLegalEmail,
+                  setLegalPhone,
+                  setLegalUpdatedAt,
+                ].some((v) => !v.trim()) && (
+                  <div className="bg-[#FFF7ED] border border-[#FED7AA] rounded-xl px-4 py-3 flex items-start gap-2.5 text-xs text-[#9A3412]">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>
+                      Hay datos legales vacíos. Mientras sigan incompletos, los textos legales
+                      mostrarán <strong>[Pendiente por completar]</strong>.
+                    </span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <label
+                      className="text-xs font-medium text-[#231F20]"
+                      htmlFor="set-legal-name"
+                    >
+                      Razón social o nombre del titular
+                    </label>
+                    <input
+                      id="set-legal-name"
+                      type="text"
+                      maxLength={SETTINGS_LIMITS.legalBusinessNameMax}
+                      value={setLegalBusinessName}
+                      onChange={(e) => setSetLegalBusinessName(e.target.value)}
+                      placeholder="Ej. Mía Store S.A.S. o Nombre Completo"
+                      className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label
+                      className="text-xs font-medium text-[#231F20]"
+                      htmlFor="set-legal-doc"
+                    >
+                      NIT o Cédula
+                    </label>
+                    <input
+                      id="set-legal-doc"
+                      type="text"
+                      maxLength={SETTINGS_LIMITS.legalDocumentIdMax}
+                      value={setLegalDocumentId}
+                      onChange={(e) => setSetLegalDocumentId(e.target.value)}
+                      placeholder="Ej. NIT 901.234.567-8"
+                      className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label
+                      className="text-xs font-medium text-[#231F20]"
+                      htmlFor="set-legal-city"
+                    >
+                      Ciudad
+                    </label>
+                    <input
+                      id="set-legal-city"
+                      type="text"
+                      maxLength={SETTINGS_LIMITS.legalCityMax}
+                      value={setLegalCity}
+                      onChange={(e) => setSetLegalCity(e.target.value)}
+                      placeholder="Ej. Bogotá D.C."
+                      className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <label
+                      className="text-xs font-medium text-[#231F20]"
+                      htmlFor="set-legal-address"
+                    >
+                      Dirección de notificación / tienda
+                    </label>
+                    <input
+                      id="set-legal-address"
+                      type="text"
+                      maxLength={SETTINGS_LIMITS.legalAddressMax}
+                      value={setLegalAddress}
+                      onChange={(e) => setSetLegalAddress(e.target.value)}
+                      placeholder="Ej. Cra. 15 # 82-30, Local 204"
+                      className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label
+                      className="text-xs font-medium text-[#231F20]"
+                      htmlFor="set-legal-email"
+                    >
+                      Correo de atención legal
+                    </label>
+                    <input
+                      id="set-legal-email"
+                      type="email"
+                      maxLength={SETTINGS_LIMITS.legalEmailMax}
+                      value={setLegalEmail}
+                      onChange={(e) => setSetLegalEmail(e.target.value)}
+                      placeholder="miastore0527@gmail.com"
+                      className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label
+                      className="text-xs font-medium text-[#231F20]"
+                      htmlFor="set-legal-phone"
+                    >
+                      Teléfono / WhatsApp de atención
+                    </label>
+                    <input
+                      id="set-legal-phone"
+                      type="text"
+                      maxLength={SETTINGS_LIMITS.legalPhoneMax}
+                      value={setLegalPhone}
+                      onChange={(e) => setSetLegalPhone(e.target.value)}
+                      placeholder="310 312 0040"
+                      className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <label
+                      className="text-xs font-medium text-[#231F20]"
+                      htmlFor="set-legal-updated"
+                    >
+                      Fecha de última actualización
+                    </label>
+                    <input
+                      id="set-legal-updated"
+                      type="text"
+                      maxLength={SETTINGS_LIMITS.legalUpdatedAtMax}
+                      value={setLegalUpdatedAt}
+                      onChange={(e) => setSetLegalUpdatedAt(e.target.value)}
+                      placeholder="Ej. 15 de noviembre de 2026"
+                      className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -1616,24 +2500,28 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-[#231F20]" htmlFor="prod-stock">
-                    Unidades en inventario
-                  </label>
-                  <input
-                    id="prod-stock"
-                    type="number"
-                    min={0}
-                    max={PRODUCT_LIMITS.maxStock}
-                    required
-                    value={formStock}
-                    onChange={(e) => setFormStock(e.target.value)}
-                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-white border border-[#EAE0DA] font-mono text-sm focus:outline-none focus:border-[#231F20]"
-                  />
+                  <span className="text-xs font-medium text-[#231F20] block">
+                    Total inventario (calculado)
+                  </span>
+                  <div className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#F8EFEA] border border-[#EAE0DA] font-mono text-sm font-semibold text-[#231F20] flex items-center justify-between tabular-nums">
+                    <span>{formCalculatedStock}</span>
+                    <span className="text-xs font-sans font-normal text-[#756661]">unidades</span>
+                  </div>
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <span className="text-xs font-medium text-[#231F20] block">Tallas disponibles</span>
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <span className="text-xs font-medium text-[#231F20] block">
+                    Tallas disponibles y stock por talla
+                  </span>
+                  {editingProduct && !editingProduct.stockBySize && (
+                    <p className="text-[11px] text-[#9A3412]">
+                      Prenda sin desglose previo por talla: verifica o ajusta las unidades exactas
+                      de cada talla antes de guardar.
+                    </p>
+                  )}
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {AVAILABLE_SIZES.map((sz) => {
                     const selected = formSizes.includes(sz);
@@ -1653,113 +2541,219 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
                     );
                   })}
                 </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-1">
+                  {formSizes.map((sz) => (
+                    <div
+                      key={`stock-size-${sz}`}
+                      className="bg-white border border-[#EAE0DA] rounded-xl px-3 py-2 flex items-center justify-between gap-2"
+                    >
+                      <label
+                        htmlFor={`prod-stock-${sz}`}
+                        className="text-xs font-semibold text-[#231F20] shrink-0"
+                      >
+                        Talla {sz}
+                      </label>
+                      <input
+                        id={`prod-stock-${sz}`}
+                        type="number"
+                        min={0}
+                        max={PRODUCT_LIMITS.maxStock}
+                        required
+                        value={formStockBySize[sz] ?? '0'}
+                        onChange={(e) =>
+                          setFormStockBySize((prev) => ({
+                            ...prev,
+                            [sz]: e.target.value,
+                          }))
+                        }
+                        className="w-20 min-h-[36px] px-2 rounded-lg bg-[#FBF9F7] border border-[#EAE0DA] font-mono text-sm text-right focus:outline-none focus:border-[#231F20]"
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
 
-              <div className="space-y-2.5">
-                <span className="text-xs font-medium text-[#231F20] block">
-                  Fotografía de la prenda
-                </span>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-[#231F20]">
+                    Galería de fotografías ({formImages.length}/{PRODUCT_LIMITS.maxImages})
+                  </span>
+                  <span className="text-[11px] text-[#756661]">
+                    La primera foto es la portada; la segunda se muestra al pasar el cursor.
+                  </span>
+                </div>
+
+                {/* Upload & Add Area */}
                 <div
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={(e) => {
                     e.preventDefault();
-                    const file = e.dataTransfer.files?.[0];
-                    if (file) processSelectedImageFile(file);
+                    if (e.dataTransfer.files?.length) {
+                      processSelectedImageFiles(e.dataTransfer.files);
+                    }
                   }}
-                  className="bg-white border border-dashed border-[#D8C8BE] rounded-2xl p-4 flex flex-col sm:flex-row gap-4 items-start sm:items-center"
+                  className="bg-white border border-dashed border-[#D8C8BE] rounded-2xl p-4 space-y-3"
                 >
-                  <div className="w-20 h-26 rounded-xl overflow-hidden bg-[#F8EFEA] border border-[#EAE0DA] shrink-0">
-                    <ResilientImage
-                      src={formImageUrl}
-                      alt="Vista previa de prenda"
-                      className="w-full h-full object-cover"
-                    />
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={(e) => {
+                      if (e.target.files?.length) {
+                        processSelectedImageFiles(e.target.files);
+                      }
+                    }}
+                    className="hidden"
+                    aria-label="Seleccionar fotos desde tu ordenador"
+                  />
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={imageUploading || formImages.length >= PRODUCT_LIMITS.maxImages}
+                      onClick={() => fileInputRef.current?.click()}
+                      className="min-h-[44px] px-4 py-2 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium inline-flex items-center gap-2 hover:bg-[#3A3335] disabled:opacity-50 transition-colors"
+                    >
+                      <Upload className="w-4 h-4" />
+                      <span>
+                        {imageUploading
+                          ? 'Optimizando y subiendo...'
+                          : `Subir fotos (${formImages.length}/${PRODUCT_LIMITS.maxImages})`}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowUrlField((v) => !v)}
+                      className="min-h-[44px] px-3.5 py-2 rounded-xl border border-[#EAE0DA] bg-[#FBF9F7] text-xs font-medium text-[#574B47] inline-flex items-center gap-1.5 hover:bg-[#F8EFEA]"
+                    >
+                      <Link2 className="w-3.5 h-3.5" />
+                      <span>{showUrlField ? 'Ocultar enlace URL' : 'Agregar por URL'}</span>
+                    </button>
                   </div>
 
-                  <div className="flex-1 min-w-0 space-y-2.5 w-full">
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) processSelectedImageFile(file);
-                      }}
-                      className="hidden"
-                      aria-label="Seleccionar foto desde tu ordenador"
-                    />
-
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={imageUploading}
-                        onClick={() => fileInputRef.current?.click()}
-                        className="min-h-[44px] px-4 py-2 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium inline-flex items-center gap-2 hover:bg-[#3A3335] disabled:opacity-50 transition-colors"
-                      >
-                        <Upload className="w-4 h-4" />
-                        <span>
-                          {imageUploading
-                            ? 'Optimizando foto...'
-                            : 'Subir foto de mi ordenador'}
-                        </span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setShowUrlField((v) => !v)}
-                        className="min-h-[44px] px-3.5 py-2 rounded-xl border border-[#EAE0DA] bg-[#FBF9F7] text-xs font-medium text-[#574B47] inline-flex items-center gap-1.5 hover:bg-[#F8EFEA]"
-                      >
-                        <Link2 className="w-3.5 h-3.5" />
-                        <span>{showUrlField ? 'Ocultar enlace URL' : 'Usar enlace URL'}</span>
-                      </button>
+                  {imageUploadNotice && (
+                    <div
+                      className={`rounded-xl px-3.5 py-2.5 text-xs flex items-start gap-2 border ${
+                        imageUploadNotice.kind === 'storage'
+                          ? 'bg-[#ECFDF5] border-[#A7F3D0] text-[#065F46]'
+                          : 'bg-[#FFF7ED] border-[#FED7AA] text-[#9A3412]'
+                      }`}
+                    >
+                      <ImagePlus className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{imageUploadNotice.text}</span>
                     </div>
+                  )}
 
-                    {formImageUrl.startsWith('data:') ? (
-                      <p className="text-xs text-[#065F46] flex items-center gap-1.5">
-                        <ImagePlus className="w-3.5 h-3.5 shrink-0" />
-                        <span>
-                          Foto cargada desde tu equipo
-                          {uploadedSizeKb ? ` (${uploadedSizeKb} KB)` : ''}. Al guardar, todas tus
-                          clientas la verán al instante.
-                        </span>
-                      </p>
-                    ) : (
-                      <p className="text-[11px] text-[#756661]">
-                        Selecciona o arrastra una foto JPG, PNG o WebP desde tu ordenador o celular.
-                      </p>
-                    )}
-
-                    {showUrlField && (
+                  {showUrlField && (
+                    <div className="flex items-center gap-2">
                       <input
                         id="prod-img"
                         type="text"
                         maxLength={PRODUCT_LIMITS.imageUrlMax}
-                        value={formImageUrl.startsWith('data:') ? '' : formImageUrl}
-                        onChange={(e) => {
-                          setUploadedSizeKb(null);
-                          setFormImageUrl(e.target.value);
-                        }}
+                        value={newImageUrlInput}
+                        onChange={(e) => setNewImageUrlInput(e.target.value)}
                         placeholder="https://... pega aquí el enlace de la fotografía"
-                        className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-xs focus:outline-none focus:border-[#231F20]"
+                        className="flex-1 min-h-[42px] px-3.5 rounded-xl bg-[#FBF9F7] border border-[#EAE0DA] text-xs focus:outline-none focus:border-[#231F20]"
                       />
-                    )}
-
-                    <div className="flex flex-wrap gap-1.5 pt-0.5">
-                      {STUDIO_GALLERY_PRESETS.map((preset) => (
-                        <button
-                          key={preset.label}
-                          type="button"
-                          onClick={() => {
-                            setUploadedSizeKb(null);
-                            setFormImageUrl(preset.url);
-                          }}
-                          className="px-2.5 py-1 rounded-lg bg-[#F8EFEA] text-[11px] text-[#574B47] hover:bg-[#EAE0DA] transition-colors"
-                        >
-                          {preset.label}
-                        </button>
-                      ))}
+                      <button
+                        type="button"
+                        onClick={handleAddUrlImage}
+                        disabled={formImages.length >= PRODUCT_LIMITS.maxImages}
+                        className="min-h-[42px] px-3.5 rounded-xl bg-[#F8EFEA] border border-[#EAE0DA] text-xs font-medium text-[#231F20] hover:bg-[#EAE0DA] disabled:opacity-40"
+                      >
+                        Añadir
+                      </button>
                     </div>
+                  )}
+
+                  {/* Quick studio presets */}
+                  <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                    <span className="text-[11px] text-[#756661] mr-1">Estudio:</span>
+                    {STUDIO_GALLERY_PRESETS.map((preset) => (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        onClick={() => {
+                          setProductModalError(null);
+                          setFormImages((prev) => {
+                            if (prev.includes(preset.url)) return prev;
+                            if (prev.length >= PRODUCT_LIMITS.maxImages) return prev;
+                            return [...prev, preset.url];
+                          });
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-[#F8EFEA] text-[11px] text-[#574B47] hover:bg-[#EAE0DA] transition-colors"
+                      >
+                        + {preset.label}
+                      </button>
+                    ))}
                   </div>
+                </div>
+
+                {/* Ordered Image List */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {formImages.map((imgUrl, idx) => (
+                    <div
+                      key={`gallery-item-${idx}-${imgUrl.slice(0, 32)}`}
+                      className="bg-white border border-[#EAE0DA] rounded-xl p-2.5 flex items-center gap-3"
+                    >
+                      <div className="w-14 h-18 rounded-lg overflow-hidden bg-[#F8EFEA] border border-[#EAE0DA] shrink-0">
+                        <ResilientImage
+                          src={imgUrl}
+                          alt={`Foto ${idx + 1}`}
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+
+                      <div className="flex-1 min-w-0 space-y-1">
+                        <p className="text-xs font-semibold text-[#231F20]">
+                          {idx === 0 ? 'Foto 1 · Portada' : idx === 1 ? 'Foto 2 · Hover' : `Foto ${idx + 1}`}
+                        </p>
+                        <p className="text-[11px] text-[#756661] truncate">
+                          {imgUrl.startsWith('data:')
+                            ? 'WebP optimizada local'
+                            : imgUrl.includes('firebasestorage')
+                              ? 'Firebase Storage (WebP)'
+                              : 'Imagen del catálogo'}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          disabled={idx === 0}
+                          onClick={() => handleMoveImage(idx, -1)}
+                          aria-label={`Subir foto ${idx + 1}`}
+                          title="Subir orden"
+                          className="min-h-[36px] min-w-[36px] rounded-lg border border-[#EAE0DA] flex items-center justify-center text-[#574B47] hover:bg-[#F8EFEA] disabled:opacity-30"
+                        >
+                          <ArrowUp className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={idx === formImages.length - 1}
+                          onClick={() => handleMoveImage(idx, 1)}
+                          aria-label={`Bajar foto ${idx + 1}`}
+                          title="Bajar orden"
+                          className="min-h-[36px] min-w-[36px] rounded-lg border border-[#EAE0DA] flex items-center justify-center text-[#574B47] hover:bg-[#F8EFEA] disabled:opacity-30"
+                        >
+                          <ArrowDown className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={formImages.length <= 1}
+                          onClick={() => handleRemoveImage(idx)}
+                          aria-label={`Eliminar foto ${idx + 1}`}
+                          title="Eliminar foto"
+                          className="min-h-[36px] min-w-[36px] rounded-lg border border-[#EAE0DA] flex items-center justify-center text-[#B91C1C] hover:bg-[#FEF2F2] disabled:opacity-30"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
 
@@ -1868,6 +2862,92 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
                 className="min-h-[44px] px-4 py-2 rounded-xl bg-[#B91C1C] text-white text-xs font-medium hover:bg-[#991B1B]"
               >
                 Eliminar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Paid Confirmation Modal for Price/Discount Alert */}
+      {paidConfirmTarget && (
+        <div
+          className="no-print fixed inset-0 z-50 flex items-center justify-center bg-[#231F20]/45 backdrop-blur-xs p-4"
+          onClick={() => setPaidConfirmTarget(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirmar pago de pedido con alerta"
+        >
+          <div
+            className="w-full max-w-md bg-[#FBF9F7] rounded-2xl border border-[#EAE0DA] p-6 space-y-4 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-full bg-[#FEF2F2] border border-[#FECACA] text-[#B91C1C] flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-display text-2xl text-[#231F20]">
+                  Confirmar pedido {paidConfirmTarget.order.orderNumber}
+                </h3>
+                <p className="text-xs text-[#574B47]">
+                  Este pedido presenta una diferencia respecto al catálogo actual. Verifica el pago
+                  recibido antes de marcarlo como <strong>Pagado</strong>.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-white border border-[#EAE0DA] rounded-xl p-3.5 space-y-1.5 text-xs text-[#574B47] tabular-nums">
+              {paidConfirmTarget.hasSubtotalMismatch && (
+                <>
+                  <div className="flex justify-between">
+                    <span>Subtotal guardado en pedido:</span>
+                    <strong className="text-[#231F20]">
+                      {formatCOP(paidConfirmTarget.order.subtotal)}
+                    </strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Subtotal según catálogo actual:</span>
+                    <strong className="text-[#B91C1C]">
+                      {formatCOP(paidConfirmTarget.expectedSubtotal)}
+                    </strong>
+                  </div>
+                </>
+              )}
+              {paidConfirmTarget.hasExcessiveDiscount && (
+                <div className="flex justify-between">
+                  <span>Descuento aplicado:</span>
+                  <strong className="text-[#B91C1C]">
+                    {formatCOP(paidConfirmTarget.order.discountAmount)}
+                  </strong>
+                </div>
+              )}
+              <div className="flex justify-between pt-1.5 border-t border-[#EAE0DA]">
+                <span>Total del pedido:</span>
+                <strong className="text-[#231F20]">
+                  {formatCOP(paidConfirmTarget.order.total)}
+                </strong>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => setPaidConfirmTarget(null)}
+                className="min-h-[44px] px-4 py-2 rounded-xl border border-[#EAE0DA] bg-white text-xs font-medium text-[#574B47]"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={busyAction}
+                onClick={async () => {
+                  const targetOrderId = paidConfirmTarget.order.id;
+                  setPaidConfirmTarget(null);
+                  await handleChangeOrderStatus(targetOrderId, 'pagado');
+                }}
+                className="min-h-[44px] px-4 py-2 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium hover:bg-[#3A3335]"
+              >
+                Confirmar como Pagado
               </button>
             </div>
           </div>

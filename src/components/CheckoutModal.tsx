@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Check,
   CheckCircle2,
@@ -10,6 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
+import { trackInitiateCheckout } from '../lib/analytics';
 import {
   buildOrderWhatsappMessage,
   buildOrderWhatsappUrl,
@@ -42,6 +43,7 @@ export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProp
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
   const [copiedSummary, setCopiedSummary] = useState(false);
+  const trackedCheckoutRef = useRef(false);
 
   const [customerName, setCustomerName] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
@@ -49,6 +51,7 @@ export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProp
   const [city, setCity] = useState('');
   const [shippingAddress, setShippingAddress] = useState('');
   const [notes, setNotes] = useState('');
+  const [privacyAccepted, setPrivacyAccepted] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -60,16 +63,28 @@ export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProp
         if (!customerName && user.displayName) setCustomerName(user.displayName);
         if (!customerEmail && user.email) setCustomerEmail(user.email);
       }
+      if (!trackedCheckoutRef.current && cart.length > 0) {
+        trackedCheckoutRef.current = true;
+        trackInitiateCheckout(cart, cartTotal);
+      }
+    } else {
+      trackedCheckoutRef.current = false;
     }
-  }, [open, user]);
+  }, [open, user, cart, cartTotal]);
 
   if (!open) return null;
 
   const handleGoogleAuth = async () => {
     setErrorMsg(null);
+    if (!privacyAccepted) {
+      setErrorMsg(
+        'Debes autorizar el tratamiento de tus datos personales según la Política de Privacidad antes de registrarte.'
+      );
+      return;
+    }
     setProcessing(true);
     try {
-      const loggedUser = await loginWithGoogle();
+      const loggedUser = await loginWithGoogle(true);
       if (!customerName && loggedUser.displayName) setCustomerName(loggedUser.displayName);
       if (!customerEmail && loggedUser.email) setCustomerEmail(loggedUser.email);
     } catch (err) {
@@ -103,6 +118,12 @@ export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProp
       setErrorMsg('Completa tu ciudad y dirección de entrega.');
       return;
     }
+    if (!privacyAccepted) {
+      setErrorMsg(
+        'Debes autorizar el tratamiento de tus datos personales y aceptar los términos para confirmar tu pedido.'
+      );
+      return;
+    }
 
     setProcessing(true);
     try {
@@ -113,6 +134,7 @@ export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProp
         shippingAddress,
         city,
         notes,
+        privacyAccepted: true,
       });
 
       setConfirmedOrder(order);
@@ -190,26 +212,62 @@ export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProp
           {step === 'form' && (
             <form onSubmit={handleSubmitOrder} className="space-y-6">
               {!user ? (
-                <div className="bg-[#F8EFEA] border border-[#EAE0DA] rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  <div className="space-y-1">
-                    <p className="text-sm font-semibold text-[#231F20] flex items-center gap-2">
-                      <Gift className="w-4 h-4 text-[#8C5E58]" />
-                      <span>Regístrate y obtén 10% en tu primer pedido</span>
-                    </p>
-                    <p className="text-xs text-[#574B47]">
-                      Al registrarte por primera vez con Google descontamos el 10% automáticamente y
-                      podrás ver el estado de tu pedido en tiempo real.
-                    </p>
+                <div className="bg-[#F8EFEA] border border-[#EAE0DA] rounded-2xl p-5 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <p className="text-sm font-semibold text-[#231F20] flex items-center gap-2">
+                        <Gift className="w-4 h-4 text-[#8C5E58]" />
+                        <span>Regístrate y obtén 10% en tu primer pedido</span>
+                      </p>
+                      <p className="text-xs text-[#574B47]">
+                        Al registrarte por primera vez con Google descontamos el 10% automáticamente
+                        y podrás ver el estado de tu pedido en tiempo real.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={processing}
+                      onClick={handleGoogleAuth}
+                      className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium inline-flex items-center justify-center gap-2 hover:bg-[#3A3335] shrink-0"
+                    >
+                      <LogIn className="w-4 h-4" />
+                      <span>{processing ? 'Conectando...' : 'Registrarme con Google'}</span>
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    disabled={processing}
-                    onClick={handleGoogleAuth}
-                    className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium inline-flex items-center justify-center gap-2 hover:bg-[#3A3335] shrink-0"
+                  <label
+                    htmlFor="chk-privacy-auth"
+                    className="flex items-start gap-2.5 pt-2 border-t border-[#EAE0DA] cursor-pointer select-none"
                   >
-                    <LogIn className="w-4 h-4" />
-                    <span>{processing ? 'Conectando...' : 'Registrarme con Google'}</span>
-                  </button>
+                    <input
+                      id="chk-privacy-auth"
+                      type="checkbox"
+                      checked={privacyAccepted}
+                      onChange={(e) => {
+                        setPrivacyAccepted(e.target.checked);
+                        if (e.target.checked) setErrorMsg(null);
+                      }}
+                      className="mt-0.5 h-4 w-4 accent-[#231F20] shrink-0"
+                    />
+                    <span className="text-xs text-[#574B47] leading-relaxed">
+                      Autorizo el tratamiento de mis datos personales según la{' '}
+                      <a
+                        href="#privacidad"
+                        onClick={onClose}
+                        className="text-[#231F20] font-medium underline underline-offset-4 hover:text-[#8C5E58]"
+                      >
+                        Política de Privacidad
+                      </a>{' '}
+                      y acepto los{' '}
+                      <a
+                        href="#terminos"
+                        onClick={onClose}
+                        className="text-[#231F20] font-medium underline underline-offset-4 hover:text-[#8C5E58]"
+                      >
+                        Términos y Condiciones
+                      </a>
+                      .
+                    </span>
+                  </label>
                 </div>
               ) : (
                 isEligibleForWelcomeDiscount && (
@@ -365,6 +423,41 @@ export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProp
                     <span className="tabular-nums">{formatCOP(cartTotal)}</span>
                   </div>
                 </div>
+
+                <label
+                  htmlFor="chk-privacy-order"
+                  className="flex items-start gap-2.5 pt-2 border-t border-[#EAE0DA] cursor-pointer select-none"
+                >
+                  <input
+                    id="chk-privacy-order"
+                    type="checkbox"
+                    checked={privacyAccepted}
+                    onChange={(e) => {
+                      setPrivacyAccepted(e.target.checked);
+                      if (e.target.checked) setErrorMsg(null);
+                    }}
+                    className="mt-0.5 h-4 w-4 accent-[#231F20] shrink-0"
+                  />
+                  <span className="text-xs text-[#574B47] leading-relaxed">
+                    Autorizo el tratamiento de mis datos personales según la{' '}
+                    <a
+                      href="#privacidad"
+                      onClick={onClose}
+                      className="text-[#231F20] font-medium underline underline-offset-4 hover:text-[#8C5E58]"
+                    >
+                      Política de Privacidad
+                    </a>{' '}
+                    y acepto los{' '}
+                    <a
+                      href="#terminos"
+                      onClick={onClose}
+                      className="text-[#231F20] font-medium underline underline-offset-4 hover:text-[#8C5E58]"
+                    >
+                      Términos y Condiciones
+                    </a>
+                    .
+                  </span>
+                </label>
 
                 <p className="text-xs text-[#574B47] leading-relaxed">
                   Al confirmar, apartamos tus prendas del inventario, guardamos tu pedido en tu

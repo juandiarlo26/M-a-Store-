@@ -5,8 +5,10 @@ import setPuntoImg from '../assets/images/set_punto_rosa_1794775251604.jpg';
 import blusaOrganzaImg from '../assets/images/blusa_organza_perla_1794775252208.jpg';
 import {
   BRAND_INFO,
+  PRODUCT_LIMITS,
   type Order,
   type Product,
+  type SizeGuideRow,
   type StoreSettings,
 } from '../types/store';
 
@@ -19,6 +21,33 @@ export const STUDIO_GALLERY_PRESETS = [
   { label: 'Blusa Organza Perla', url: blusaOrganzaImg },
 ];
 
+export const DEFAULT_DELIVERY_TIME_TEXT =
+  'Bogotá 1-2 días hábiles; resto del país 3-5 días hábiles';
+
+export const DEFAULT_SIZE_GUIDE: SizeGuideRow[] = [
+  { size: 'XS', bust: '82 - 86 cm', waist: '62 - 66 cm', hip: '88 - 92 cm' },
+  { size: 'S', bust: '87 - 91 cm', waist: '67 - 71 cm', hip: '93 - 97 cm' },
+  { size: 'M', bust: '92 - 96 cm', waist: '72 - 76 cm', hip: '98 - 102 cm' },
+  { size: 'L', bust: '97 - 102 cm', waist: '77 - 82 cm', hip: '103 - 108 cm' },
+  { size: 'XL', bust: '103 - 108 cm', waist: '83 - 88 cm', hip: '109 - 114 cm' },
+];
+
+export function getProductImages(product: Pick<Product, 'imageUrl' | 'images'>): string[] {
+  const rawList = Array.isArray(product.images) ? product.images : [];
+  const merged = [...rawList, product.imageUrl]
+    .map((u) => (typeof u === 'string' ? u.trim() : ''))
+    .filter((u) => u.length >= PRODUCT_LIMITS.imageUrlMin);
+
+  const unique: string[] = [];
+  for (const url of merged) {
+    if (!unique.includes(url)) {
+      unique.push(url);
+    }
+    if (unique.length >= PRODUCT_LIMITS.maxImages) break;
+  }
+  return unique;
+}
+
 export const DEFAULT_STORE_SETTINGS: StoreSettings = {
   announcementText:
     'Regístrate por primera vez y obtén 10% de descuento en tu primer pedido · Envío gratis desde $280.000',
@@ -27,6 +56,10 @@ export const DEFAULT_STORE_SETTINGS: StoreSettings = {
   heroTitle: 'Elegancia sutil en cada silueta',
   heroSubtitle:
     'Prendas femeninas atemporales confeccionadas en seda fluida, lino natural y tejidos delicados para acompañarte todos los días.',
+  launchMode: 'proximamente',
+  launchDate: null,
+  deliveryTimeText: DEFAULT_DELIVERY_TIME_TEXT,
+  sizeGuide: DEFAULT_SIZE_GUIDE,
 };
 
 export type StarterProductInput = Omit<Product, 'id' | 'createdAt' | 'updatedAt'> & {
@@ -44,7 +77,9 @@ export const STARTER_PRODUCTS: StarterProductInput[] = [
     category: 'Vestidos',
     color: 'Marfil',
     sizes: ['XS', 'S', 'M', 'L'],
+    stockBySize: { XS: 2, S: 3, M: 2, L: 2 },
     imageUrl: dressSedaImg,
+    images: [dressSedaImg],
     stock: 9,
     featured: true,
     active: true,
@@ -59,7 +94,9 @@ export const STARTER_PRODUCTS: StarterProductInput[] = [
     category: 'Blazers',
     color: 'Arena',
     sizes: ['XS', 'S', 'M', 'L'],
+    stockBySize: { XS: 1, S: 2, M: 2, L: 2 },
     imageUrl: blazerLinoImg,
+    images: [blazerLinoImg],
     stock: 7,
     featured: true,
     active: true,
@@ -74,7 +111,9 @@ export const STARTER_PRODUCTS: StarterProductInput[] = [
     category: 'Conjuntos',
     color: 'Rosa Empolvado',
     sizes: ['S', 'M', 'L'],
+    stockBySize: { S: 2, M: 2, L: 1 },
     imageUrl: setPuntoImg,
+    images: [setPuntoImg],
     stock: 5,
     featured: true,
     active: true,
@@ -89,7 +128,9 @@ export const STARTER_PRODUCTS: StarterProductInput[] = [
     category: 'Blusas',
     color: 'Blanco Perla',
     sizes: ['XS', 'S', 'M', 'L'],
+    stockBySize: { XS: 3, S: 3, M: 3, L: 3 },
     imageUrl: blusaOrganzaImg,
+    images: [blusaOrganzaImg],
     stock: 12,
     featured: true,
     active: true,

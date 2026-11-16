@@ -98,15 +98,22 @@ export function AccountAndOrdersModal({
     logout,
   } = useStore();
   const [authError, setAuthError] = useState<string | null>(null);
+  const [privacyConsent, setPrivacyConsent] = useState(false);
   const [busy, setBusy] = useState(false);
 
   if (!open) return null;
 
   const handleLogin = async () => {
     setAuthError(null);
+    if (!privacyConsent) {
+      setAuthError(
+        'Debes autorizar el tratamiento de tus datos personales según la Política de Privacidad para continuar.'
+      );
+      return;
+    }
     setBusy(true);
     try {
-      await loginWithGoogle();
+      await loginWithGoogle(true);
     } catch (err) {
       setAuthError(
         err instanceof Error ? err.message : 'No pudimos completar el inicio de sesión.'
@@ -173,8 +180,34 @@ export function AccountAndOrdersModal({
                   10% en tu primera compra y hacer seguimiento en vivo a tus pedidos.
                 </p>
               </div>
+              <label
+                htmlFor="account-privacy-consent"
+                className="max-w-md mx-auto flex items-start gap-2.5 text-left bg-[#FBF9F7] border border-[#EAE0DA] rounded-xl p-3.5 cursor-pointer select-none"
+              >
+                <input
+                  id="account-privacy-consent"
+                  type="checkbox"
+                  checked={privacyConsent}
+                  onChange={(e) => {
+                    setPrivacyConsent(e.target.checked);
+                    if (e.target.checked) setAuthError(null);
+                  }}
+                  className="mt-0.5 h-4 w-4 accent-[#231F20] shrink-0"
+                />
+                <span className="text-xs text-[#574B47] leading-relaxed">
+                  Autorizo el tratamiento de mis datos personales según la{' '}
+                  <a
+                    href="#privacidad"
+                    onClick={onClose}
+                    className="text-[#231F20] font-medium underline underline-offset-4 hover:text-[#8C5E58]"
+                  >
+                    Política de Privacidad
+                  </a>
+                  .
+                </span>
+              </label>
               {authError && (
-                <p className="text-xs text-[#B91C1C] bg-[#FEF2F2] border border-[#FECACA] rounded-xl px-4 py-2.5">
+                <p className="text-xs text-[#B91C1C] bg-[#FEF2F2] border border-[#FECACA] rounded-xl px-4 py-2.5 max-w-md mx-auto">
                   {authError}
                 </p>
               )}

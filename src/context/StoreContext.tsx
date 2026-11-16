@@ -1,4 +1,12 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import {
   collection,
@@ -10,10 +18,12 @@ import {
   runTransaction,
   serverTimestamp,
   setDoc,
+  Timestamp,
   updateDoc,
   where,
   writeBatch,
 } from 'firebase/firestore';
+import { configurePixels, trackAddToCart, trackLead, trackPurchase } from '../lib/analytics';
 import {
   auth,
   db,
@@ -24,22 +34,36 @@ import {
   testConnection,
 } from '../lib/firebase';
 import { normalizeSku } from '../lib/skuUtils';
-import { DEFAULT_STORE_SETTINGS, STARTER_PRODUCTS } from '../lib/starterCatalog';
+import {
+  DEFAULT_DELIVERY_TIME_TEXT,
+  DEFAULT_SIZE_GUIDE,
+  DEFAULT_STORE_SETTINGS,
+  getProductImages,
+  STARTER_PRODUCTS,
+} from '../lib/starterCatalog';
 import {
   BOOTSTRAPPED_ADMIN_EMAILS,
+  COLOMBIA_WHATSAPP_10_REGEX,
+  COLOMBIA_WHATSAPP_NORMALIZED_REGEX,
+  GA_MEASUREMENT_REGEX,
+  META_PIXEL_REGEX,
   ORDER_LIMITS,
   PRODUCT_LIMITS,
   SETTINGS_LIMITS,
+  WAITLIST_LIMITS,
   type CartItem,
   type CustomerProfile,
+  type LaunchMode,
   type Order,
   type OrderItem,
   type OrderStatus,
   type PaymentStatus,
   type Product,
   type ProductCategory,
+  type SizeGuideRow,
   type StaffMember,
   type StoreSettings,
+  type WaitlistEntry,
 } from '../types/store';
 
 const CART_STORAGE_KEY = 'mia_store_cart_v1';
@@ -51,6 +75,7 @@ interface CheckoutPayload {
   shippingAddress: string;
   city: string;
   notes?: string;
+  privacyAccepted?: boolean;
 }
 
 export interface ProductInput {
@@ -61,7 +86,9 @@ export interface ProductInput {
   category: ProductCategory;
   color: string;
   sizes: string[];
+  stockBySize?: Record<string, number>;
   imageUrl: string;
+  images?: string[];
   stock: number;
   featured: boolean;
   active: boolean;
@@ -84,26 +111,35 @@ interface StoreContextValue {
   orders: Order[];
   ordersLoading: boolean;
   settings: StoreSettings;
+  settingsLoaded: boolean;
+  waitlistEntries: WaitlistEntry[];
+  waitlistLoading: boolean;
   cart: CartItem[];
   cartCount: number;
   cartSubtotal: number;
   welcomeDiscountAmount: number;
   shippingCost: number;
   cartTotal: number;
-  loginWithGoogle: () => Promise<User>;
+  loginWithGoogle: (acceptedPrivacy?: boolean) => Promise<User>;
   logout: () => Promise<void>;
   addToCart: (product: Product, size: string, quantity?: number) => void;
   updateCartQuantity: (productId: string, size: string, quantity: number) => void;
   removeFromCart: (productId: string, size: string) => void;
   clearCart: () => void;
   placeOrder: (payload: CheckoutPayload) => Promise<Order>;
-  createProduct: (input: ProductInput) => Promise<Product>;
+  createProduct: (input: ProductInput, preferredId?: string) => Promise<Product>;
   updateProduct: (productId: string, input: ProductInput) => Promise<void>;
   adjustProductStock: (productId: string, newStock: number) => Promise<void>;
   toggleProductActive: (productId: string, active: boolean) => Promise<void>;
   deleteProduct: (productId: string) => Promise<void>;
   updateOrderStatus: (orderId: string, status: OrderStatus) => Promise<void>;
   updateStoreSettings: (next: Omit<StoreSettings, 'updatedAt'>) => Promise<void>;
+  submitWaitlistEntry: (
+    name: string,
+    phoneInput: string,
+    consent: boolean
+  ) => Promise<{ alreadyRegistered?: boolean }>;
+  deleteWaitlistEntry: (entryId: string) => Promise<void>;
   seedStarterCatalog: () => Promise<void>;
   addStaffMember: (email: string, name: string) => Promise<void>;
   removeStaffMember: (email: string) => Promise<void>;
@@ -123,16 +159,102 @@ function slugifyId(text: string): string {
   return `${base || 'prenda'}-${suffix}`;
 }
 
+function parseStockBySize(raw: unknown): Record<string, number> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length === 0) return undefined;
+  const result: Record<string, number> = {};
+  for (const [size, val] of entries) {
+    if (size) {
+      result[size] = Math.max(0, Math.min(PRODUCT_LIMITS.maxStock, Math.floor(Number(val) || 0)));
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseNumericDeltas(raw: unknown): Record<string, number> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const result: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const qty = Math.floor(Number(v));
+    if (k && qty > 0) {
+      result[k] = qty;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+export function getAvailableStockForSize(product: Product, size: string): number {
+  if (product.stockBySize && Object.keys(product.stockBySize).length > 0) {
+    return Math.max(0, Math.floor(Number(product.stockBySize[size] ?? 0)));
+  }
+  return Math.max(0, Math.floor(Number(product.stock || 0)));
+}
+
+function formatSequentialOrderNumber(n: number): string {
+  return `MIA-${String(Math.max(1, Math.floor(n))).padStart(5, '0')}`;
+}
+
+function buildFallbackOrderNumber(): string {
+  const now = new Date();
+  const yy = String(now.getFullYear()).slice(-2);
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  const rand4 = Math.floor(1000 + Math.random() * 9000);
+  return `MIA-${yy}${mm}${dd}-${rand4}`;
+}
+
+function parseSizeGuide(raw: unknown): SizeGuideRow[] {
+  if (!Array.isArray(raw) || raw.length === 0) return DEFAULT_SIZE_GUIDE;
+  const rows: SizeGuideRow[] = [];
+  for (const item of raw.slice(0, 10)) {
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as Record<string, unknown>;
+    const size = String(rec.size || '').trim().slice(0, 16);
+    const bust = String(rec.bust || '').trim().slice(0, 32);
+    const waist = String(rec.waist || '').trim().slice(0, 32);
+    const hip = String(rec.hip || '').trim().slice(0, 32);
+    if (size) {
+      rows.push({ size, bust, waist, hip });
+    }
+  }
+  return rows.length > 0 ? rows : DEFAULT_SIZE_GUIDE;
+}
+
 function sanitizeProductInput(input: ProductInput): ProductInput {
   const rawSku = input.sku?.trim() ?? '';
   const sku = rawSku.length > 0 ? normalizeSku(rawSku) : undefined;
   const name = input.name.trim().slice(0, PRODUCT_LIMITS.nameMax);
   const description = input.description.trim().slice(0, PRODUCT_LIMITS.descriptionMax);
   const color = input.color.trim().slice(0, PRODUCT_LIMITS.colorMax);
-  const rawImageUrl = input.imageUrl.trim();
+  const rawList = Array.isArray(input.images) && input.images.length > 0 ? input.images : [input.imageUrl];
+  const cleanImages: string[] = [];
+  for (const rawItem of rawList) {
+    const trimmed = typeof rawItem === 'string' ? rawItem.trim() : '';
+    if (trimmed.length >= PRODUCT_LIMITS.imageUrlMin && !cleanImages.includes(trimmed)) {
+      cleanImages.push(trimmed);
+    }
+    if (cleanImages.length >= PRODUCT_LIMITS.maxImages) break;
+  }
+
   const sizes = (input.sizes.length > 0 ? input.sizes : ['Única']).slice(0, PRODUCT_LIMITS.maxSizes);
   const price = Math.max(1, Math.min(PRODUCT_LIMITS.maxPrice, Math.round(Number(input.price) || 0)));
-  const stock = Math.max(0, Math.min(PRODUCT_LIMITS.maxStock, Math.floor(Number(input.stock) || 0)));
+
+  let cleanStockBySize: Record<string, number> | undefined;
+  let stock = Math.max(0, Math.min(PRODUCT_LIMITS.maxStock, Math.floor(Number(input.stock) || 0)));
+  if (input.stockBySize && typeof input.stockBySize === 'object') {
+    cleanStockBySize = {};
+    for (const sz of sizes) {
+      cleanStockBySize[sz] = Math.max(
+        0,
+        Math.min(PRODUCT_LIMITS.maxStock, Math.floor(Number(input.stockBySize[sz] ?? 0)))
+      );
+    }
+    stock = Math.min(
+      PRODUCT_LIMITS.maxStock,
+      Object.values(cleanStockBySize).reduce((sum, n) => sum + n, 0)
+    );
+  }
 
   if (rawSku.length > 0 && (!sku || sku.length < PRODUCT_LIMITS.skuMin || sku.length > PRODUCT_LIMITS.skuMax)) {
     throw new Error(
@@ -148,13 +270,22 @@ function sanitizeProductInput(input: ProductInput): ProductInput {
   if (color.length < PRODUCT_LIMITS.colorMin) {
     throw new Error('Indica el tono o color de la prenda.');
   }
-  if (rawImageUrl.length < PRODUCT_LIMITS.imageUrlMin) {
-    throw new Error('Agrega o sube una fotografía válida para la prenda.');
+  if (cleanImages.length === 0) {
+    throw new Error('Agrega o sube al menos una fotografía válida para la prenda.');
   }
-  if (rawImageUrl.length > PRODUCT_LIMITS.imageUrlMax) {
-    throw new Error('La fotografía es demasiado pesada. Sube otra imagen o usa una más ligera.');
+  for (const imgUrl of cleanImages) {
+    if (imgUrl.length > PRODUCT_LIMITS.imageUrlMax) {
+      throw new Error('Una de las fotografías es demasiado pesada. Sube una imagen más ligera.');
+    }
   }
-  const imageUrl = rawImageUrl;
+  const combinedLength = cleanImages.reduce((sum, u) => sum + u.length, 0);
+  if (combinedLength > 850000) {
+    throw new Error(
+      'El peso conjunto de las fotos supera el límite de almacenamiento en línea. Reduce el número de fotos locales o habilita Firebase Storage.'
+    );
+  }
+
+  const imageUrl = cleanImages[0];
 
   return {
     ...(sku ? { sku } : {}),
@@ -164,7 +295,9 @@ function sanitizeProductInput(input: ProductInput): ProductInput {
     category: input.category,
     color,
     sizes,
+    ...(cleanStockBySize ? { stockBySize: cleanStockBySize } : {}),
     imageUrl,
+    images: cleanImages,
     stock,
     featured: Boolean(input.featured),
     active: Boolean(input.active),
@@ -172,6 +305,7 @@ function sanitizeProductInput(input: ProductInput): ProductInput {
 }
 
 export function StoreProvider({ children }: { children: React.ReactNode }) {
+  const pendingPrivacyConsentRef = useRef(false);
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -186,7 +320,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [productsLoading, setProductsLoading] = useState(true);
   const [orders, setOrders] = useState<Order[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
+  const [ordersLoadedOnce, setOrdersLoadedOnce] = useState(false);
   const [settings, setSettings] = useState<StoreSettings>(DEFAULT_STORE_SETTINGS);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [waitlistEntries, setWaitlistEntries] = useState<WaitlistEntry[]>([]);
+  const [waitlistLoading, setWaitlistLoading] = useState(false);
 
   const [cart, setCart] = useState<CartItem[]>(() => {
     try {
@@ -249,7 +387,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           .trim()
           .slice(0, 100);
         if (!existingSnap.exists()) {
-          await setDoc(customerRef, {
+          const customerCreateDoc: Record<string, unknown> = {
             uid: nextUser.uid,
             name: safeName,
             email: nextUser.email || email,
@@ -257,12 +395,22 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             ordersCount: 0,
             registeredAt: serverTimestamp(),
             lastSeenAt: serverTimestamp(),
-          });
+          };
+          if (pendingPrivacyConsentRef.current) {
+            customerCreateDoc.privacyConsentAt = serverTimestamp();
+            pendingPrivacyConsentRef.current = false;
+          }
+          await setDoc(customerRef, customerCreateDoc);
         } else {
-          await updateDoc(customerRef, {
+          const customerUpdateDoc: Record<string, unknown> = {
             name: safeName,
             lastSeenAt: serverTimestamp(),
-          });
+          };
+          if (pendingPrivacyConsentRef.current) {
+            customerUpdateDoc.privacyConsentAt = serverTimestamp();
+            pendingPrivacyConsentRef.current = false;
+          }
+          await updateDoc(customerRef, customerUpdateDoc);
         }
       } catch (err) {
         console.warn('No se pudo sincronizar el registro de la clienta:', err);
@@ -294,6 +442,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             phone: d.phone ? String(d.phone) : undefined,
             welcomeDiscountUsed: Boolean(d.welcomeDiscountUsed),
             ordersCount: Number(d.ordersCount || 0),
+            privacyConsentAt: d.privacyConsentAt ?? null,
             registeredAt: d.registeredAt ?? null,
             lastSeenAt: d.lastSeenAt ?? null,
           });
@@ -328,6 +477,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             phone: d.phone ? String(d.phone) : undefined,
             welcomeDiscountUsed: Boolean(d.welcomeDiscountUsed),
             ordersCount: Number(d.ordersCount || 0),
+            privacyConsentAt: d.privacyConsentAt ?? null,
             registeredAt: d.registeredAt ?? null,
             lastSeenAt: d.lastSeenAt ?? null,
           };
@@ -385,6 +535,45 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return () => unsub();
   }, [authReady, user, isOwner]);
 
+  // Admin: live subscription to pre-launch waitlist
+  useEffect(() => {
+    if (!authReady || !user || !user.emailVerified || !isAdmin) {
+      setWaitlistEntries([]);
+      setWaitlistLoading(false);
+      return;
+    }
+
+    setWaitlistLoading(true);
+    const unsub = onSnapshot(
+      collection(db, 'waitlist'),
+      (snapshot) => {
+        const list: WaitlistEntry[] = snapshot.docs.map((docSnap) => {
+          const d = docSnap.data();
+          return {
+            id: docSnap.id,
+            name: String(d.name || ''),
+            phone: String(d.phone || docSnap.id),
+            consent: Boolean(d.consent),
+            createdAt: d.createdAt ?? null,
+          };
+        });
+        list.sort((a, b) => {
+          const tA = a.createdAt?.toMillis?.() ?? 0;
+          const tB = b.createdAt?.toMillis?.() ?? 0;
+          return tB - tA;
+        });
+        setWaitlistEntries(list);
+        setWaitlistLoading(false);
+      },
+      (error) => {
+        setWaitlistLoading(false);
+        handleFirestoreError(error, OperationType.LIST, 'waitlist');
+      }
+    );
+
+    return () => unsub();
+  }, [authReady, user, isAdmin]);
+
   // Subscribe to store settings
   useEffect(() => {
     const settingsRef = doc(db, 'store_settings', 'general');
@@ -392,9 +581,31 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       settingsRef,
       (snap) => {
         if (snap.exists()) {
-          const data = snap.data() as StoreSettings;
+          const data = snap.data() as Record<string, unknown>;
+          const launchMode: LaunchMode =
+            data.launchMode === 'abierta' ? 'abierta' : 'proximamente';
+          const launchDate =
+            data.launchDate && typeof (data.launchDate as Timestamp).toDate === 'function'
+              ? (data.launchDate as Timestamp)
+              : null;
+          const metaPixelId =
+            typeof data.metaPixelId === 'string' && data.metaPixelId.trim()
+              ? data.metaPixelId.trim()
+              : undefined;
+          const gaMeasurementId =
+            typeof data.gaMeasurementId === 'string' && data.gaMeasurementId.trim()
+              ? data.gaMeasurementId.trim()
+              : undefined;
+          const deliveryTimeText =
+            typeof data.deliveryTimeText === 'string' && data.deliveryTimeText.trim()
+              ? data.deliveryTimeText.trim()
+              : DEFAULT_DELIVERY_TIME_TEXT;
+
           setSettings({
-            announcementText: data.announcementText ?? DEFAULT_STORE_SETTINGS.announcementText,
+            announcementText:
+              typeof data.announcementText === 'string'
+                ? data.announcementText
+                : DEFAULT_STORE_SETTINGS.announcementText,
             freeShippingThreshold:
               typeof data.freeShippingThreshold === 'number'
                 ? data.freeShippingThreshold
@@ -403,21 +614,58 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
               typeof data.shippingFee === 'number'
                 ? data.shippingFee
                 : DEFAULT_STORE_SETTINGS.shippingFee,
-            heroTitle: data.heroTitle ?? DEFAULT_STORE_SETTINGS.heroTitle,
-            heroSubtitle: data.heroSubtitle ?? DEFAULT_STORE_SETTINGS.heroSubtitle,
-            updatedAt: data.updatedAt ?? null,
+            heroTitle:
+              typeof data.heroTitle === 'string'
+                ? data.heroTitle
+                : DEFAULT_STORE_SETTINGS.heroTitle,
+            heroSubtitle:
+              typeof data.heroSubtitle === 'string'
+                ? data.heroSubtitle
+                : DEFAULT_STORE_SETTINGS.heroSubtitle,
+            launchMode,
+            launchDate,
+            ...(metaPixelId ? { metaPixelId } : {}),
+            ...(gaMeasurementId ? { gaMeasurementId } : {}),
+            deliveryTimeText,
+            sizeGuide: parseSizeGuide(data.sizeGuide),
+            legalBusinessName:
+              typeof data.legalBusinessName === 'string' ? data.legalBusinessName : '',
+            legalDocumentId:
+              typeof data.legalDocumentId === 'string' ? data.legalDocumentId : '',
+            legalAddress:
+              typeof data.legalAddress === 'string' ? data.legalAddress : '',
+            legalCity:
+              typeof data.legalCity === 'string' ? data.legalCity : '',
+            legalEmail:
+              typeof data.legalEmail === 'string' ? data.legalEmail : '',
+            legalPhone:
+              typeof data.legalPhone === 'string' ? data.legalPhone : '',
+            legalUpdatedAt:
+              typeof data.legalUpdatedAt === 'string' ? data.legalUpdatedAt : '',
+            updatedAt: (data.updatedAt as Timestamp | null) ?? null,
           });
         } else {
           setSettings(DEFAULT_STORE_SETTINGS);
         }
+        setSettingsLoaded(true);
       },
       (error) => {
+        setSettingsLoaded(true);
         handleFirestoreError(error, OperationType.GET, 'store_settings/general');
       }
     );
 
     return () => unsub();
   }, []);
+
+  // Configure measurement pixels dynamically whenever store settings change
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    configurePixels({
+      metaPixelId: settings.metaPixelId,
+      gaMeasurementId: settings.gaMeasurementId,
+    });
+  }, [settingsLoaded, settings.metaPixelId, settings.gaMeasurementId]);
 
   // Subscribe to products in real time
   useEffect(() => {
@@ -433,6 +681,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       (snapshot) => {
         const items: Product[] = snapshot.docs.map((docSnap) => {
           const d = docSnap.data();
+          const stockBySize = parseStockBySize(d.stockBySize);
+          const gallery = getProductImages({
+            imageUrl: String(d.imageUrl || ''),
+            images: Array.isArray(d.images) ? d.images.map(String) : undefined,
+          });
           return {
             id: docSnap.id,
             sku: d.sku ? String(d.sku) : undefined,
@@ -442,7 +695,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             category: d.category as ProductCategory,
             color: String(d.color || ''),
             sizes: Array.isArray(d.sizes) ? d.sizes.map(String) : ['Única'],
-            imageUrl: String(d.imageUrl || ''),
+            ...(stockBySize ? { stockBySize } : {}),
+            imageUrl: gallery[0] || String(d.imageUrl || ''),
+            ...(gallery.length > 0 ? { images: gallery } : {}),
             stock: Number(d.stock ?? 0),
             featured: Boolean(d.featured),
             active: Boolean(d.active),
@@ -474,6 +729,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     if (!authReady || !user || !user.emailVerified) {
       setOrders([]);
       setOrdersLoading(false);
+      setOrdersLoadedOnce(false);
       return;
     }
 
@@ -487,6 +743,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       (snapshot) => {
         const list: Order[] = snapshot.docs.map((docSnap) => {
           const d = docSnap.data();
+          const stockDeltas = parseNumericDeltas(d.stockDeltas);
+          const sizeDeltas = parseNumericDeltas(d.sizeDeltas);
           return {
             id: docSnap.id,
             orderNumber: String(d.orderNumber || ''),
@@ -498,6 +756,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             city: String(d.city || ''),
             notes: d.notes ? String(d.notes) : undefined,
             items: Array.isArray(d.items) ? d.items : [],
+            ...(stockDeltas ? { stockDeltas } : {}),
+            ...(sizeDeltas ? { sizeDeltas } : {}),
             subtotal: Number(d.subtotal || 0),
             discountAmount: Number(d.discountAmount || 0),
             discountCode: d.discountCode ? String(d.discountCode) : undefined,
@@ -520,6 +780,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
         setOrders(list);
         setOrdersLoading(false);
+        setOrdersLoadedOnce(true);
       },
       (error) => {
         setOrdersLoading(false);
@@ -529,6 +790,24 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
     return () => unsub();
   }, [authReady, user, isAdmin]);
+
+  // Admin: ensure counters/orders exists once orders are loaded so shoppers get sequential MIA-00001 IDs
+  useEffect(() => {
+    if (!authReady || !isAdmin || !ordersLoadedOnce) return;
+    const counterRef = doc(db, 'counters', 'orders');
+    getDoc(counterRef)
+      .then((snap) => {
+        if (!snap.exists()) {
+          return setDoc(counterRef, {
+            next: Math.max(1, orders.length + 1),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn('No se pudo inicializar el contador de pedidos:', err);
+      });
+  }, [authReady, isAdmin, ordersLoadedOnce, orders.length]);
 
   const isUsingStarterPreview = !productsLoading && liveProducts.length === 0;
 
@@ -544,7 +823,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       category: item.category,
       color: item.color,
       sizes: item.sizes,
+      ...(item.stockBySize ? { stockBySize: item.stockBySize } : {}),
       imageUrl: item.imageUrl,
+      ...(item.images ? { images: item.images } : {}),
       stock: item.stock,
       featured: item.featured,
       active: item.active,
@@ -566,7 +847,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         category: item.category,
         color: item.color,
         sizes: item.sizes,
+        ...(item.stockBySize ? { stockBySize: item.stockBySize } : {}),
         imageUrl: item.imageUrl,
+        ...(item.images ? { images: item.images } : {}),
         stock: item.stock,
         featured: item.featured,
         active: item.active,
@@ -575,24 +858,39 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       });
     }
     const settingsRef = doc(db, 'store_settings', 'general');
-    batch.set(settingsRef, {
-      announcementText: DEFAULT_STORE_SETTINGS.announcementText,
-      freeShippingThreshold: DEFAULT_STORE_SETTINGS.freeShippingThreshold,
-      shippingFee: DEFAULT_STORE_SETTINGS.shippingFee,
-      heroTitle: DEFAULT_STORE_SETTINGS.heroTitle,
-      heroSubtitle: DEFAULT_STORE_SETTINGS.heroSubtitle,
-      updatedAt: serverTimestamp(),
-    });
-
     try {
+      const existingSettingsSnap = await getDoc(settingsRef);
+      if (!existingSettingsSnap.exists()) {
+        batch.set(settingsRef, {
+          announcementText: DEFAULT_STORE_SETTINGS.announcementText,
+          freeShippingThreshold: DEFAULT_STORE_SETTINGS.freeShippingThreshold,
+          shippingFee: DEFAULT_STORE_SETTINGS.shippingFee,
+          heroTitle: DEFAULT_STORE_SETTINGS.heroTitle,
+          heroSubtitle: DEFAULT_STORE_SETTINGS.heroSubtitle,
+          launchMode: DEFAULT_STORE_SETTINGS.launchMode ?? 'proximamente',
+          launchDate: null,
+          deliveryTimeText: DEFAULT_DELIVERY_TIME_TEXT,
+          sizeGuide: DEFAULT_SIZE_GUIDE,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      const counterRef = doc(db, 'counters', 'orders');
+      const counterSnap = await getDoc(counterRef);
+      if (!counterSnap.exists()) {
+        batch.set(counterRef, {
+          next: Math.max(1, orders.length + 1),
+          updatedAt: serverTimestamp(),
+        });
+      }
       await batch.commit();
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'products');
     }
-  }, [isAdmin]);
+  }, [isAdmin, orders.length]);
 
   const createProduct = useCallback(
-    async (input: ProductInput): Promise<Product> => {
+    async (input: ProductInput, preferredId?: string): Promise<Product> => {
       const clean = sanitizeProductInput(input);
       if (clean.sku) {
         const duplicate = liveProducts.find(
@@ -604,7 +902,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           );
         }
       }
-      const productId = slugifyId(clean.name);
+      const validPreferred =
+        preferredId &&
+        /^[a-zA-Z0-9_-]{1,128}$/.test(preferredId) &&
+        !liveProducts.some((p) => p.id === preferredId)
+          ? preferredId
+          : null;
+      const productId = validPreferred ?? slugifyId(clean.name);
       const path = `products/${productId}`;
       try {
         await setDoc(doc(db, 'products', productId), {
@@ -723,32 +1027,100 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           }
         }
 
+        const sizeDeltasByProduct = new Map<string, Map<string, number>>();
+        if (
+          data.sizeDeltas &&
+          typeof data.sizeDeltas === 'object' &&
+          !Array.isArray(data.sizeDeltas)
+        ) {
+          for (const [compositeKey, rawQty] of Object.entries(
+            data.sizeDeltas as Record<string, unknown>
+          )) {
+            const sepIdx = compositeKey.lastIndexOf('__');
+            const qty = Math.floor(Number(rawQty));
+            if (sepIdx > 0 && qty > 0) {
+              const pid = compositeKey.slice(0, sepIdx);
+              const size = compositeKey.slice(sepIdx + 2);
+              if (pid && size) {
+                const perSize = sizeDeltasByProduct.get(pid) ?? new Map<string, number>();
+                perSize.set(size, (perSize.get(size) || 0) + qty);
+                sizeDeltasByProduct.set(pid, perSize);
+              }
+            }
+          }
+        }
+
         const isCanceling = prevStatus !== 'cancelado' && nextStatus === 'cancelado';
         const isReactivating = prevStatus === 'cancelado' && nextStatus !== 'cancelado';
 
-        const productUpdates: Array<{ ref: ReturnType<typeof doc>; newStock: number }> = [];
+        const productUpdates: Array<{
+          ref: ReturnType<typeof doc>;
+          newStock: number;
+          nextStockBySize?: Record<string, number>;
+        }> = [];
 
         if (isCanceling || isReactivating) {
-          for (const [productId, qty] of qtyByProduct.entries()) {
+          const allProductIds = new Set<string>([
+            ...qtyByProduct.keys(),
+            ...sizeDeltasByProduct.keys(),
+          ]);
+
+          for (const productId of allProductIds) {
             const productRef = doc(db, 'products', productId);
             const prodSnap = await transaction.get(productRef);
             if (!prodSnap.exists()) continue;
 
-            const currentStock = Number(prodSnap.data().stock || 0);
-            if (isCanceling) {
+            const prodData = prodSnap.data();
+            const currentStock = Math.max(0, Math.floor(Number(prodData.stock || 0)));
+            const currentStockBySize = parseStockBySize(prodData.stockBySize);
+            const sizeDeltasForProduct = sizeDeltasByProduct.get(productId);
+            const totalQty =
+              qtyByProduct.get(productId) ||
+              (sizeDeltasForProduct
+                ? Array.from(sizeDeltasForProduct.values()).reduce((a, b) => a + b, 0)
+                : 0);
+
+            if (totalQty <= 0) continue;
+
+            if (currentStockBySize && sizeDeltasForProduct && sizeDeltasForProduct.size > 0) {
+              const nextStockBySize: Record<string, number> = { ...currentStockBySize };
+              for (const [size, szQty] of sizeDeltasForProduct.entries()) {
+                const currentSizeStock = Math.max(0, Math.floor(Number(nextStockBySize[size] ?? 0)));
+                if (isCanceling) {
+                  nextStockBySize[size] = Math.min(PRODUCT_LIMITS.maxStock, currentSizeStock + szQty);
+                } else {
+                  if (currentSizeStock < szQty) {
+                    throw new Error(
+                      `No hay stock suficiente de "${prodData.name}" en talla ${size} para reactivar este pedido.`
+                    );
+                  }
+                  nextStockBySize[size] = currentSizeStock - szQty;
+                }
+              }
+
+              const newStock = Math.min(
+                PRODUCT_LIMITS.maxStock,
+                Object.values(nextStockBySize).reduce((sum, n) => sum + n, 0)
+              );
               productUpdates.push({
                 ref: productRef,
-                newStock: Math.min(PRODUCT_LIMITS.maxStock, currentStock + qty),
+                newStock,
+                nextStockBySize,
+              });
+            } else if (isCanceling) {
+              productUpdates.push({
+                ref: productRef,
+                newStock: Math.min(PRODUCT_LIMITS.maxStock, currentStock + totalQty),
               });
             } else {
-              if (currentStock < qty) {
+              if (currentStock < totalQty) {
                 throw new Error(
-                  `No hay stock suficiente de "${prodSnap.data().name}" para reactivar este pedido.`
+                  `No hay stock suficiente de "${prodData.name}" para reactivar este pedido.`
                 );
               }
               productUpdates.push({
                 ref: productRef,
-                newStock: currentStock - qty,
+                newStock: currentStock - totalQty,
               });
             }
           }
@@ -768,10 +1140,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         }
 
         for (const upd of productUpdates) {
-          transaction.update(upd.ref, {
+          const patch: Record<string, unknown> = {
             stock: upd.newStock,
             updatedAt: serverTimestamp(),
-          });
+          };
+          if (upd.nextStockBySize) {
+            patch.stockBySize = upd.nextStockBySize;
+          }
+          transaction.update(upd.ref, patch);
         }
 
         transaction.update(orderRef, {
@@ -791,24 +1167,128 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const updateStoreSettings = useCallback(async (next: Omit<StoreSettings, 'updatedAt'>) => {
     const path = 'store_settings/general';
-    const payload = {
+    const cleanMeta = (next.metaPixelId || '').trim();
+    const cleanGa = (next.gaMeasurementId || '').trim().toUpperCase();
+    const cleanLaunchMode: LaunchMode =
+      next.launchMode === 'abierta' ? 'abierta' : 'proximamente';
+
+    if (cleanMeta && !META_PIXEL_REGEX.test(cleanMeta)) {
+      throw new Error(
+        'El ID del Píxel de Meta debe contener solo dígitos (entre 10 y 20 números).'
+      );
+    }
+    if (cleanGa && !GA_MEASUREMENT_REGEX.test(cleanGa)) {
+      throw new Error(
+        'El ID de Google Analytics 4 debe tener el formato G-XXXXXXXX (ej. G-ABC1234567).'
+      );
+    }
+
+    const payload: Record<string, unknown> = {
       announcementText: next.announcementText.trim().slice(0, SETTINGS_LIMITS.announcementMax),
       freeShippingThreshold: Math.max(0, Math.round(Number(next.freeShippingThreshold) || 0)),
       shippingFee: Math.max(0, Math.round(Number(next.shippingFee) || 0)),
       heroTitle: next.heroTitle.trim().slice(0, SETTINGS_LIMITS.heroTitleMax),
       heroSubtitle: next.heroSubtitle.trim().slice(0, SETTINGS_LIMITS.heroSubtitleMax),
+      launchMode: cleanLaunchMode,
+      launchDate: next.launchDate ?? null,
+      deliveryTimeText: (next.deliveryTimeText ?? DEFAULT_DELIVERY_TIME_TEXT)
+        .trim()
+        .slice(0, SETTINGS_LIMITS.deliveryTimeMax),
+      sizeGuide: parseSizeGuide(next.sizeGuide),
+      legalBusinessName: (next.legalBusinessName ?? '')
+        .trim()
+        .slice(0, SETTINGS_LIMITS.legalBusinessNameMax),
+      legalDocumentId: (next.legalDocumentId ?? '')
+        .trim()
+        .slice(0, SETTINGS_LIMITS.legalDocumentIdMax),
+      legalAddress: (next.legalAddress ?? '').trim().slice(0, SETTINGS_LIMITS.legalAddressMax),
+      legalCity: (next.legalCity ?? '').trim().slice(0, SETTINGS_LIMITS.legalCityMax),
+      legalEmail: (next.legalEmail ?? '').trim().slice(0, SETTINGS_LIMITS.legalEmailMax),
+      legalPhone: (next.legalPhone ?? '').trim().slice(0, SETTINGS_LIMITS.legalPhoneMax),
+      legalUpdatedAt: (next.legalUpdatedAt ?? '').trim().slice(0, SETTINGS_LIMITS.legalUpdatedAtMax),
       updatedAt: serverTimestamp(),
     };
-    if (payload.heroTitle.length < SETTINGS_LIMITS.heroTitleMin) {
+    if (cleanMeta) {
+      payload.metaPixelId = cleanMeta;
+    }
+    if (cleanGa) {
+      payload.gaMeasurementId = cleanGa;
+    }
+
+    if (String(payload.heroTitle).length < SETTINGS_LIMITS.heroTitleMin) {
       throw new Error('El título principal debe tener al menos 4 caracteres.');
     }
-    if (payload.heroSubtitle.length < SETTINGS_LIMITS.heroSubtitleMin) {
+    if (String(payload.heroSubtitle).length < SETTINGS_LIMITS.heroSubtitleMin) {
       throw new Error('El subtítulo debe tener al menos 4 caracteres.');
     }
     try {
       await setDoc(doc(db, 'store_settings', 'general'), payload);
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
+    }
+  }, []);
+
+  const submitWaitlistEntry = useCallback(
+    async (
+      nameInput: string,
+      phoneInput: string,
+      consent: boolean
+    ): Promise<{ alreadyRegistered?: boolean }> => {
+      const cleanName = nameInput.trim().slice(0, WAITLIST_LIMITS.nameMax);
+      if (cleanName.length < WAITLIST_LIMITS.nameMin) {
+        throw new Error('Ingresa tu nombre completo (mínimo 2 caracteres).');
+      }
+
+      const digits = phoneInput.replace(/\D/g, '');
+      let normalizedPhone = '';
+      if (COLOMBIA_WHATSAPP_10_REGEX.test(digits)) {
+        normalizedPhone = `57${digits}`;
+      } else if (COLOMBIA_WHATSAPP_NORMALIZED_REGEX.test(digits)) {
+        normalizedPhone = digits;
+      } else {
+        throw new Error(
+          'Ingresa un número de WhatsApp colombiano válido (10 dígitos empezando por 3).'
+        );
+      }
+
+      if (!consent) {
+        throw new Error(
+          'Debes autorizar el tratamiento de tus datos personales para unirte a la lista.'
+        );
+      }
+
+      const path = `waitlist/${normalizedPhone}`;
+      try {
+        await setDoc(doc(db, 'waitlist', normalizedPhone), {
+          name: cleanName,
+          phone: normalizedPhone,
+          consent: true,
+          createdAt: serverTimestamp(),
+        });
+        trackLead();
+        return { alreadyRegistered: false };
+      } catch (error: unknown) {
+        const code =
+          typeof error === 'object' && error !== null && 'code' in error
+            ? String((error as { code?: unknown }).code)
+            : '';
+        if (code === 'permission-denied') {
+          // Existing document cannot be overwritten or read by non-admins; treat duplicate smoothly
+          return { alreadyRegistered: true };
+        }
+        handleFirestoreError(error, OperationType.CREATE, path);
+        return {};
+      }
+    },
+    []
+  );
+
+  const deleteWaitlistEntry = useCallback(async (entryId: string) => {
+    const path = `waitlist/${entryId}`;
+    try {
+      await deleteDoc(doc(db, 'waitlist', entryId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, path);
     }
   }, []);
 
@@ -846,7 +1326,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const addToCart = useCallback((product: Product, size: string, quantity = 1) => {
-    if (product.stock <= 0) return;
+    const sizeStock = getAvailableStockForSize(product, size);
+    if (product.stock <= 0 || sizeStock <= 0) return;
+    const safeQty = Math.min(sizeStock, Math.max(1, quantity));
     setCart((prev) => {
       const existingIdx = prev.findIndex(
         (item) => item.productId === product.id && item.size === size
@@ -856,8 +1338,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         const current = next[existingIdx];
         next[existingIdx] = {
           ...current,
-          maxStock: product.stock,
-          quantity: Math.min(product.stock, current.quantity + quantity),
+          maxStock: sizeStock,
+          quantity: Math.min(sizeStock, current.quantity + safeQty),
         };
         return next;
       }
@@ -872,25 +1354,31 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           imageUrl: product.imageUrl.length <= 2000 ? product.imageUrl : '',
           size,
           color: product.color,
-          quantity: Math.min(product.stock, Math.max(1, quantity)),
-          maxStock: product.stock,
+          quantity: safeQty,
+          maxStock: sizeStock,
         },
       ];
     });
+    trackAddToCart(product, size, safeQty);
   }, []);
 
-  const updateCartQuantity = useCallback((productId: string, size: string, quantity: number) => {
-    setCart((prev) => {
-      if (quantity <= 0) {
-        return prev.filter((item) => !(item.productId === productId && item.size === size));
-      }
-      return prev.map((item) =>
-        item.productId === productId && item.size === size
-          ? { ...item, quantity: Math.min(item.maxStock, quantity) }
-          : item
-      );
-    });
-  }, []);
+  const updateCartQuantity = useCallback(
+    (productId: string, size: string, quantity: number) => {
+      const liveProd = products.find((p) => p.id === productId);
+      setCart((prev) => {
+        if (quantity <= 0) {
+          return prev.filter((item) => !(item.productId === productId && item.size === size));
+        }
+        return prev.flatMap((item) => {
+          if (!(item.productId === productId && item.size === size)) return [item];
+          const liveMax = liveProd ? getAvailableStockForSize(liveProd, size) : item.maxStock;
+          if (liveMax <= 0) return [];
+          return [{ ...item, maxStock: liveMax, quantity: Math.min(liveMax, quantity) }];
+        });
+      });
+    },
+    [products]
+  );
 
   const removeFromCart = useCallback((productId: string, size: string) => {
     setCart((prev) => prev.filter((item) => !(item.productId === productId && item.size === size)));
@@ -967,33 +1455,49 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       }
 
       const orderId = `ord-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-      const orderNumber = `MIA-${Math.floor(1000 + Math.random() * 9000)}`;
       const paymentStatus: PaymentStatus = 'pendiente_pago';
-      const paymentReference = `WPP-${orderNumber.slice(-4)}`;
 
       const uid = auth.currentUser.uid;
       const authEmail = auth.currentUser.email || customerEmail;
       const orderRef = doc(db, 'orders', orderId);
       const customerRef = doc(db, 'customers', uid);
+      const counterRef = doc(db, 'counters', 'orders');
 
       const qtyByProduct = new Map<string, number>();
-      for (const item of cart) {
+      const qtyByProductSize = new Map<string, number>();
+      const sizesByProduct = new Map<string, Map<string, number>>();
+      for (const item of cart.slice(0, ORDER_LIMITS.maxItems)) {
         const qty = Math.max(1, Math.floor(Number(item.quantity || 1)));
+        const sz = String(item.size || 'Única');
         qtyByProduct.set(item.productId, (qtyByProduct.get(item.productId) || 0) + qty);
+        const compositeKey = `${item.productId}__${sz}`;
+        qtyByProductSize.set(compositeKey, (qtyByProductSize.get(compositeKey) || 0) + qty);
+
+        const perSize = sizesByProduct.get(item.productId) ?? new Map<string, number>();
+        perSize.set(sz, (perSize.get(sz) || 0) + qty);
+        sizesByProduct.set(item.productId, perSize);
       }
 
+      let orderNumber = '';
+      let paymentReference = '';
       let computedSubtotal = 0;
       let appliedDiscount = 0;
       let appliedCode: string | undefined;
       let finalShipping = 0;
       let finalTotal = 0;
 
+      const stockDeltas = Object.fromEntries(qtyByProduct);
+      const sizeDeltas = Object.fromEntries(qtyByProductSize);
+
       try {
         await runTransaction(db, async (transaction) => {
           const customerSnap = await transaction.get(customerRef);
+          const counterSnap = await transaction.get(counterRef);
+
           const productUpdates: Array<{
             ref: ReturnType<typeof doc>;
             newStock: number;
+            nextStockBySize?: Record<string, number>;
           }> = [];
 
           for (const [productId, qtyNeeded] of qtyByProduct.entries()) {
@@ -1012,13 +1516,52 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
                 `Stock insuficiente para "${data.name}". Disponibles: ${currentStock}.`
               );
             }
+
+            const existingStockBySize = parseStockBySize(data.stockBySize);
+            let nextStockBySize: Record<string, number> | undefined;
+            if (existingStockBySize) {
+              nextStockBySize = { ...existingStockBySize };
+              const perSizeNeeded = sizesByProduct.get(productId);
+              if (perSizeNeeded) {
+                for (const [sz, szQty] of perSizeNeeded.entries()) {
+                  const availForSize = Math.floor(Number(nextStockBySize[sz] ?? 0));
+                  if (availForSize < szQty) {
+                    throw new Error(
+                      `Stock insuficiente para "${data.name}" en talla ${sz}. Disponibles: ${availForSize}.`
+                    );
+                  }
+                  nextStockBySize[sz] = availForSize - szQty;
+                }
+              }
+            }
+
             productUpdates.push({
               ref: productRef,
               newStock: Math.max(0, Math.floor(currentStock - qtyNeeded)),
+              ...(nextStockBySize ? { nextStockBySize } : {}),
             });
           }
 
-          for (const item of cart) {
+          let counterMode: 'update' | 'create' | 'none' = 'none';
+          let nextCounterValue = 1;
+          if (counterSnap.exists()) {
+            const currentNext = Math.max(1, Math.floor(Number(counterSnap.data().next || 1)));
+            orderNumber = formatSequentialOrderNumber(currentNext);
+            nextCounterValue = currentNext + 1;
+            counterMode = 'update';
+          } else if (isAdmin) {
+            const initialNext = Math.max(1, orders.length + 1);
+            orderNumber = formatSequentialOrderNumber(initialNext);
+            nextCounterValue = initialNext + 1;
+            counterMode = 'create';
+          } else {
+            orderNumber = buildFallbackOrderNumber();
+            counterMode = 'none';
+          }
+          paymentReference = `WPP-${orderNumber.replace(/^MIA-/, '')}`;
+
+          computedSubtotal = 0;
+          for (const item of cart.slice(0, ORDER_LIMITS.maxItems)) {
             const qty = Math.max(1, Math.floor(Number(item.quantity || 1)));
             const price = Math.max(0, Number(item.price || 0));
             computedSubtotal += price * qty;
@@ -1046,8 +1589,26 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           finalTotal = netSubtotal + finalShipping;
 
           for (const upd of productUpdates) {
-            transaction.update(upd.ref, {
+            const updatePatch: Record<string, unknown> = {
               stock: upd.newStock,
+              lastOrderId: orderId,
+              updatedAt: serverTimestamp(),
+            };
+            if (upd.nextStockBySize) {
+              updatePatch.stockBySize = upd.nextStockBySize;
+            }
+            transaction.update(upd.ref, updatePatch);
+          }
+
+          if (counterMode === 'update') {
+            transaction.update(counterRef, {
+              next: nextCounterValue,
+              lastOrderId: orderId,
+              updatedAt: serverTimestamp(),
+            });
+          } else if (counterMode === 'create') {
+            transaction.set(counterRef, {
+              next: nextCounterValue,
               lastOrderId: orderId,
               updatedAt: serverTimestamp(),
             });
@@ -1061,6 +1622,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
               phone: customerPhone,
               welcomeDiscountUsed: true,
               ordersCount: 1,
+              ...(payload.privacyAccepted ? { privacyConsentAt: serverTimestamp() } : {}),
               registeredAt: serverTimestamp(),
               lastSeenAt: serverTimestamp(),
             });
@@ -1070,11 +1632,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
               phone: customerPhone,
               welcomeDiscountUsed: true,
               ordersCount: prevOrdersCount + 1,
+              ...(payload.privacyAccepted ? { privacyConsentAt: serverTimestamp() } : {}),
               lastSeenAt: serverTimestamp(),
             });
           }
-
-          const stockDeltas = Object.fromEntries(qtyByProduct);
 
           const orderDoc: Record<string, unknown> = {
             orderNumber,
@@ -1098,6 +1659,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
                   : '',
             })),
             stockDeltas,
+            sizeDeltas,
             subtotal: computedSubtotal,
             discountAmount: appliedDiscount,
             shippingCost: finalShipping,
@@ -1150,7 +1712,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           quantity: item.quantity,
           imageUrl: item.imageUrl,
         })),
-        stockDeltas: Object.fromEntries(qtyByProduct),
+        stockDeltas,
+        sizeDeltas,
         subtotal: computedSubtotal,
         discountAmount: appliedDiscount,
         discountCode: appliedCode,
@@ -1163,10 +1726,31 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       };
 
       clearCart();
+      trackPurchase(createdOrder);
       return createdOrder;
     },
-    [cart, clearCart, liveProducts.length, settings.freeShippingThreshold, settings.shippingFee]
+    [
+      cart,
+      clearCart,
+      isAdmin,
+      liveProducts.length,
+      orders.length,
+      settings.freeShippingThreshold,
+      settings.shippingFee,
+    ]
   );
+
+  const loginWithGoogle = useCallback(async (acceptedPrivacy = false): Promise<User> => {
+    if (acceptedPrivacy) {
+      pendingPrivacyConsentRef.current = true;
+    }
+    try {
+      return await signInWithGoogle();
+    } catch (err) {
+      pendingPrivacyConsentRef.current = false;
+      throw err;
+    }
+  }, []);
 
   const value: StoreContextValue = {
     user,
@@ -1185,13 +1769,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     orders,
     ordersLoading,
     settings,
+    settingsLoaded,
+    waitlistEntries,
+    waitlistLoading,
     cart,
     cartCount,
     cartSubtotal,
     welcomeDiscountAmount,
     shippingCost,
     cartTotal,
-    loginWithGoogle: signInWithGoogle,
+    loginWithGoogle,
     logout: signOutUser,
     addToCart,
     updateCartQuantity,
@@ -1205,6 +1792,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     deleteProduct,
     updateOrderStatus,
     updateStoreSettings,
+    submitWaitlistEntry,
+    deleteWaitlistEntry,
     seedStarterCatalog,
     addStaffMember,
     removeStaffMember,

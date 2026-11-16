@@ -43,15 +43,23 @@
           "type": "array",
           "description": "Tallas disponibles para la prenda (máximo 10)."
         },
+        "stockBySize": {
+          "type": "object",
+          "description": "Unidades disponibles por talla (claves XS, S, M, L, XL, Única)."
+        },
         "imageUrl": {
           "type": "string",
-          "description": "URL, ruta o imagen optimizada en Data URL de la prenda.",
+          "description": "URL, ruta o imagen optimizada en Data URL de la portada de la prenda.",
           "minLength": 4,
           "maxLength": 450000
         },
+        "images": {
+          "type": "array",
+          "description": "Galería de 1 a 6 fotografías de la prenda (la primera posición es la portada)."
+        },
         "stock": {
           "type": "integer",
-          "description": "Unidades disponibles en inventario."
+          "description": "Unidades totales disponibles en inventario."
         },
         "featured": {
           "type": "boolean",
@@ -152,7 +160,11 @@
         },
         "stockDeltas": {
           "type": "object",
-          "description": "Mapa de unidades descontadas por productId en la transacción de compra."
+          "description": "Mapa de unidades totales descontadas por productId en la transacción de compra."
+        },
+        "sizeDeltas": {
+          "type": "object",
+          "description": "Mapa de unidades descontadas por producto y talla (${productId}__${size})."
         },
         "subtotal": {
           "type": "number",
@@ -263,6 +275,11 @@
           "type": "integer",
           "description": "Cantidad de pedidos realizados por la clienta."
         },
+        "privacyConsentAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha y hora de autorización expresa de la Política de Tratamiento de Datos Personales."
+        },
         "registeredAt": {
           "type": "string",
           "format": "date-time",
@@ -352,6 +369,70 @@
           "minLength": 4,
           "maxLength": 240
         },
+        "launchMode": {
+          "type": "string",
+          "description": "Estado público de la tienda ('proximamente' o 'abierta').",
+          "enum": ["proximamente", "abierta"]
+        },
+        "launchDate": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha y hora opcional de apertura para la cuenta regresiva en modo Próximamente."
+        },
+        "metaPixelId": {
+          "type": "string",
+          "description": "ID numérico del Píxel de Meta (10 a 20 dígitos).",
+          "pattern": "^[0-9]{10,20}$"
+        },
+        "gaMeasurementId": {
+          "type": "string",
+          "description": "ID de medición de Google Analytics 4 (formato G-XXXXXXXX).",
+          "pattern": "^G-[A-Z0-9]{6,16}$"
+        },
+        "deliveryTimeText": {
+          "type": "string",
+          "description": "Texto editable con los tiempos estimados de entrega.",
+          "maxLength": 160
+        },
+        "sizeGuide": {
+          "type": "array",
+          "description": "Tabla editable de medidas (busto, cintura y cadera en cm para tallas XS a XL)."
+        },
+        "legalBusinessName": {
+          "type": "string",
+          "description": "Razón social o nombre del titular responsable del tratamiento de datos.",
+          "maxLength": 140
+        },
+        "legalDocumentId": {
+          "type": "string",
+          "description": "NIT o cédula del responsable legal.",
+          "maxLength": 40
+        },
+        "legalAddress": {
+          "type": "string",
+          "description": "Dirección física de atención o domicilio comercial.",
+          "maxLength": 180
+        },
+        "legalCity": {
+          "type": "string",
+          "description": "Ciudad del domicilio legal.",
+          "maxLength": 80
+        },
+        "legalEmail": {
+          "type": "string",
+          "description": "Correo de atención de consultas y reclamos legales.",
+          "maxLength": 160
+        },
+        "legalPhone": {
+          "type": "string",
+          "description": "Teléfono o WhatsApp de atención de datos y garantías.",
+          "maxLength": 30
+        },
+        "legalUpdatedAt": {
+          "type": "string",
+          "description": "Fecha de última actualización de los textos legales.",
+          "maxLength": 40
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time",
@@ -366,6 +447,34 @@
         "heroSubtitle",
         "updatedAt"
       ]
+    },
+    "WaitlistEntry": {
+      "title": "WaitlistEntry",
+      "description": "Registro en lista de espera previo al lanzamiento con consentimiento expreso.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Nombre de la persona inscrita.",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "phone": {
+          "type": "string",
+          "description": "WhatsApp colombiano normalizado (57 + 10 dígitos).",
+          "pattern": "^573[0-9]{9}$"
+        },
+        "consent": {
+          "type": "boolean",
+          "description": "Aceptación obligatoria de la Política de Privacidad."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha de inscripción en servidor."
+        }
+      },
+      "required": ["name", "phone", "consent", "createdAt"]
     },
     "AdminUser": {
       "title": "AdminUser",
@@ -392,6 +501,30 @@
         }
       },
       "required": ["email", "name", "createdAt"]
+    },
+    "OrderCounter": {
+      "title": "OrderCounter",
+      "description": "Contador consecutivo único para la numeración de pedidos MIA-00001.",
+      "type": "object",
+      "properties": {
+        "next": {
+          "type": "integer",
+          "description": "Siguiente número consecutivo disponible."
+        },
+        "lastOrderId": {
+          "type": "string",
+          "description": "ID del último pedido generado atómicamente con este contador.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Fecha de actualización del contador."
+        }
+      },
+      "required": ["next"]
     }
   },
   "firestore": {
@@ -402,6 +535,10 @@
     "/orders/{orderId}": {
       "schema": { "$ref": "#/entities/Order" },
       "description": "Pedidos por WhatsApp con seguimiento en tiempo real."
+    },
+    "/counters/{counterId}": {
+      "schema": { "$ref": "#/entities/OrderCounter" },
+      "description": "Contadores atómicos de numeración consecutiva de pedidos."
     },
     "/customers/{uid}": {
       "schema": { "$ref": "#/entities/CustomerProfile" },
@@ -418,6 +555,10 @@
     "/admins/{uid}": {
       "schema": { "$ref": "#/entities/AdminUser" },
       "description": "Lista blanca de cuentas administradoras por UID."
+    },
+    "/waitlist/{entryId}": {
+      "schema": { "$ref": "#/entities/WaitlistEntry" },
+      "description": "Lista de espera previa al lanzamiento indexada por teléfono WhatsApp normalizado (57 + 10 dígitos)."
     }
   }
 }

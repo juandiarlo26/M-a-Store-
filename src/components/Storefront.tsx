@@ -12,7 +12,7 @@ import {
   User as UserIcon,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
-import { formatCOP, HERO_IMAGE_URL } from '../lib/starterCatalog';
+import { formatCOP, getProductImages, HERO_IMAGE_URL } from '../lib/starterCatalog';
 import { BRAND_INFO, type Product } from '../types/store';
 import { AccountAndOrdersModal } from './AccountAndOrdersModal';
 import { CartDrawer } from './CartDrawer';
@@ -22,9 +22,10 @@ import { ResilientImage } from './ResilientImage';
 
 interface StorefrontProps {
   onOpenAdmin: () => void;
+  isComingSoonPreview?: boolean;
 }
 
-export function Storefront({ onOpenAdmin }: StorefrontProps) {
+export function Storefront({ onOpenAdmin, isComingSoonPreview = false }: StorefrontProps) {
   const {
     user,
     isAdmin,
@@ -33,7 +34,6 @@ export function Storefront({ onOpenAdmin }: StorefrontProps) {
     productsLoading,
     settings,
     cartCount,
-    loginWithGoogle,
   } = useStore();
 
   const [selectedCategory, setSelectedCategory] = useState<string>('Todas');
@@ -42,7 +42,6 @@ export function Storefront({ onOpenAdmin }: StorefrontProps) {
   const [cartOpen, setCartOpen] = useState(false);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
-  const [registering, setRegistering] = useState(false);
 
   const visibleProducts = useMemo(() => {
     return products.filter((p) => p.active);
@@ -72,17 +71,22 @@ export function Storefront({ onOpenAdmin }: StorefrontProps) {
     });
   }, [visibleProducts, selectedCategory, searchTerm]);
 
-  const handleQuickRegister = async () => {
-    setRegistering(true);
-    try {
-      await loginWithGoogle();
-    } finally {
-      setRegistering(false);
-    }
-  };
-
   return (
     <div className="min-h-screen bg-[#FBF9F7] text-[#231F20] pb-20 md:pb-0">
+      {/* Admin preview notice when store is in Próximamente mode */}
+      {isComingSoonPreview && (
+        <div className="bg-[#231F20] text-[#FBF9F7] px-4 py-2 text-center text-xs flex flex-wrap items-center justify-center gap-3">
+          <span>Vista previa: la tienda está en modo Próximamente</span>
+          <button
+            type="button"
+            onClick={onOpenAdmin}
+            className="underline underline-offset-4 font-medium hover:text-[#EBDAD3]"
+          >
+            Configurar lanzamiento
+          </button>
+        </div>
+      )}
+
       {/* Slim non-sticky announcement strip */}
       {settings.announcementText && (
         <div className="bg-[#F8EFEA] border-b border-[#EAE0DA] px-4 py-2 text-center">
@@ -215,11 +219,10 @@ export function Storefront({ onOpenAdmin }: StorefrontProps) {
               </div>
               <button
                 type="button"
-                disabled={registering}
-                onClick={handleQuickRegister}
+                onClick={() => setAccountOpen(true)}
                 className="min-h-[44px] px-5 py-2 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium hover:bg-[#3A3335] transition-colors whitespace-nowrap shrink-0"
               >
-                {registering ? 'Conectando...' : 'Registrarme · 10% OFF'}
+                Registrarme · 10% OFF
               </button>
             </div>
           ) : (
@@ -324,6 +327,9 @@ export function Storefront({ onOpenAdmin }: StorefrontProps) {
                   : product.stock <= 3
                     ? `Últimas ${product.stock}`
                     : null;
+                const gallery = getProductImages(product);
+                const coverImage = gallery[0] || product.imageUrl;
+                const hoverImage = gallery.length > 1 ? gallery[1] : null;
 
                 return (
                   <article
@@ -331,13 +337,21 @@ export function Storefront({ onOpenAdmin }: StorefrontProps) {
                     className="group flex flex-col cursor-pointer"
                     onClick={() => setSelectedProduct(product)}
                   >
-                    <div className="aspect-[3/4] rounded-2xl overflow-hidden bg-[#F8EFEA] border border-[#EAE0DA] mb-3.5 transition-transform duration-200 group-hover:-translate-y-0.5">
+                    <div className="relative aspect-[3/4] rounded-2xl overflow-hidden bg-[#F8EFEA] border border-[#EAE0DA] mb-3.5 transition-transform duration-200 group-hover:-translate-y-0.5">
                       <ResilientImage
-                        src={product.imageUrl}
+                        src={coverImage}
                         alt={product.name}
                         fallbackLabel={product.name}
                         className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
                       />
+                      {hoverImage && (
+                        <ResilientImage
+                          src={hoverImage}
+                          alt={`${product.name} — vista alternativa`}
+                          fallbackLabel={product.name}
+                          className="absolute inset-0 w-full h-full object-cover opacity-0 transition-opacity duration-500 group-hover:opacity-100"
+                        />
+                      )}
                     </div>
 
                     <div className="space-y-1 flex-1 flex flex-col justify-between">
@@ -511,8 +525,19 @@ export function Storefront({ onOpenAdmin }: StorefrontProps) {
           </div>
         </div>
 
-        <div className="max-w-7xl mx-auto mt-8 pt-6 border-t border-[#EAE0DA] flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-[#756661]">
+        <div className="max-w-7xl mx-auto mt-8 pt-6 border-t border-[#EAE0DA] flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-[#756661]">
           <p>© {new Date().getFullYear()} Mía Store. Todos los derechos reservados.</p>
+          <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2">
+            <a href="#privacidad" className="hover:text-[#231F20] underline underline-offset-4 transition-colors">
+              Política de Privacidad
+            </a>
+            <a href="#terminos" className="hover:text-[#231F20] underline underline-offset-4 transition-colors">
+              Términos y Condiciones
+            </a>
+            <a href="#cambios" className="hover:text-[#231F20] underline underline-offset-4 transition-colors">
+              Cambios y Retracto
+            </a>
+          </div>
           <button
             type="button"
             onClick={() => (isAdmin ? onOpenAdmin() : setAccountOpen(true))}

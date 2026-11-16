@@ -1,7 +1,23 @@
-import { useEffect, useState } from 'react';
-import { Minus, Plus, ShoppingBag, X } from 'lucide-react';
-import { useStore } from '../context/StoreContext';
-import { formatCOP } from '../lib/starterCatalog';
+import { useEffect, useRef, useState } from 'react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Minus,
+  Plus,
+  RefreshCcw,
+  Ruler,
+  ShoppingBag,
+  Truck,
+  X,
+} from 'lucide-react';
+import { getAvailableStockForSize, useStore } from '../context/StoreContext';
+import { trackViewContent } from '../lib/analytics';
+import {
+  DEFAULT_DELIVERY_TIME_TEXT,
+  DEFAULT_SIZE_GUIDE,
+  formatCOP,
+  getProductImages,
+} from '../lib/starterCatalog';
 import type { Product } from '../types/store';
 import { ResilientImage } from './ResilientImage';
 
@@ -16,29 +32,90 @@ export function ProductDetailModal({
   onClose,
   onAddedToCart,
 }: ProductDetailModalProps) {
-  const { addToCart } = useStore();
+  const { addToCart, settings } = useStore();
   const [selectedSize, setSelectedSize] = useState<string>('');
   const [quantity, setQuantity] = useState(1);
+  const [activeImageIdx, setActiveImageIdx] = useState(0);
+  const [sizeGuideOpen, setSizeGuideOpen] = useState(false);
+  const trackedProductIdRef = useRef<string | null>(null);
+  const touchStartXRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (product) {
-      setSelectedSize(product.sizes[0] || 'Única');
+      const firstAvailable =
+        product.sizes.find((sz) => getAvailableStockForSize(product, sz) > 0) ||
+        product.sizes[0] ||
+        'Única';
+      setSelectedSize(firstAvailable);
       setQuantity(1);
+      setActiveImageIdx(0);
+      setSizeGuideOpen(false);
+      if (trackedProductIdRef.current !== product.id) {
+        trackedProductIdRef.current = product.id;
+        trackViewContent(product);
+      }
+    } else {
+      trackedProductIdRef.current = null;
+      setSizeGuideOpen(false);
     }
-  }, [product]);
+  }, [product?.id]);
 
   if (!product) return null;
 
-  const isOutOfStock = product.stock <= 0;
-  const stockLabel = isOutOfStock
-    ? 'Agotado temporalmente'
-    : product.stock <= 3
-      ? `Últimas ${product.stock} unidades`
-      : `Disponible · ${product.stock} unidades`;
+  const gallery = getProductImages(product);
+  const safeIdx = Math.min(activeImageIdx, Math.max(0, gallery.length - 1));
+  const currentImageSrc = gallery[safeIdx] || product.imageUrl;
+
+  const hasSizeBreakdown = Boolean(
+    product.stockBySize && Object.keys(product.stockBySize).length > 0
+  );
+  const activeSize = selectedSize || product.sizes[0] || 'Única';
+  const selectedSizeStock = getAvailableStockForSize(product, activeSize);
+  const isOutOfStock = product.stock <= 0 || selectedSizeStock <= 0;
+
+  const deliveryTime = settings.deliveryTimeText?.trim() || DEFAULT_DELIVERY_TIME_TEXT;
+  const sizeGuideRows =
+    settings.sizeGuide && settings.sizeGuide.length > 0 ? settings.sizeGuide : DEFAULT_SIZE_GUIDE;
+
+  const stockLabel =
+    product.stock <= 0
+      ? 'Agotado temporalmente'
+      : selectedSizeStock <= 0
+        ? 'Talla agotada'
+        : selectedSizeStock <= 3
+          ? `Últimas ${selectedSizeStock} ${selectedSizeStock === 1 ? 'unidad' : 'unidades'}${hasSizeBreakdown ? ` en talla ${activeSize}` : ''}`
+          : `Disponible · ${selectedSizeStock} unidades${hasSizeBreakdown ? ` (talla ${activeSize})` : ''}`;
+
+  const handlePrevImage = () => {
+    if (gallery.length <= 1) return;
+    setActiveImageIdx((idx) => (idx - 1 + gallery.length) % gallery.length);
+  };
+
+  const handleNextImage = () => {
+    if (gallery.length <= 1) return;
+    setActiveImageIdx((idx) => (idx + 1) % gallery.length);
+  };
+
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    touchStartXRef.current = e.touches[0]?.clientX ?? null;
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (touchStartXRef.current === null || gallery.length <= 1) return;
+    const endX = e.changedTouches[0]?.clientX ?? touchStartXRef.current;
+    const delta = endX - touchStartXRef.current;
+    touchStartXRef.current = null;
+    if (Math.abs(delta) < 40) return;
+    if (delta < 0) {
+      handleNextImage();
+    } else {
+      handlePrevImage();
+    }
+  };
 
   const handleAdd = () => {
     if (isOutOfStock) return;
-    addToCart(product, selectedSize || product.sizes[0] || 'Única', quantity);
+    addToCart(product, activeSize, Math.min(selectedSizeStock, quantity));
     onClose();
     onAddedToCart();
   };
@@ -69,14 +146,84 @@ export function ProductDetailModal({
           <X className="w-5 h-5" strokeWidth={1.5} />
         </button>
 
-        {/* Editorial 3:4 Image */}
-        <div className="bg-[#F8EFEA] aspect-[3/4] md:aspect-auto md:h-full overflow-hidden">
-          <ResilientImage
-            src={product.imageUrl}
-            alt={product.name}
-            fallbackLabel={product.name}
-            className="w-full h-full object-cover"
-          />
+        {/* Swipeable Multi-Photo Gallery */}
+        <div className="flex flex-col bg-[#F8EFEA]">
+          <div
+            onTouchStart={handleTouchStart}
+            onTouchEnd={handleTouchEnd}
+            className="relative aspect-[3/4] w-full overflow-hidden select-none group"
+          >
+            <ResilientImage
+              src={currentImageSrc}
+              alt={`${product.name} — fotografía ${safeIdx + 1}`}
+              fallbackLabel={product.name}
+              className="w-full h-full object-cover transition-opacity duration-300"
+            />
+
+            {gallery.length > 1 && (
+              <>
+                <button
+                  type="button"
+                  onClick={handlePrevImage}
+                  aria-label="Foto anterior"
+                  className="absolute left-3 top-1/2 -translate-y-1/2 min-h-[44px] min-w-[44px] rounded-full bg-[#FBF9F7]/85 border border-[#EAE0DA] text-[#231F20] flex items-center justify-center shadow-xs hover:bg-white transition-colors"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleNextImage}
+                  aria-label="Siguiente foto"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 min-h-[44px] min-w-[44px] rounded-full bg-[#FBF9F7]/85 border border-[#EAE0DA] text-[#231F20] flex items-center justify-center shadow-xs hover:bg-white transition-colors"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+
+                {/* Indicator Dots */}
+                <div
+                  aria-label="Indicadores de galería"
+                  className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-[#231F20]/45 backdrop-blur-xs"
+                >
+                  {gallery.map((_, idx) => (
+                    <button
+                      key={`dot-${idx}`}
+                      type="button"
+                      onClick={() => setActiveImageIdx(idx)}
+                      aria-label={`Ver fotografía ${idx + 1}`}
+                      className={`h-2 rounded-full transition-all ${
+                        idx === safeIdx ? 'w-5 bg-white' : 'w-2 bg-white/55 hover:bg-white/80'
+                      }`}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          {gallery.length > 1 && (
+            <div className="p-3 bg-[#F8EFEA] border-t border-[#EAE0DA] flex items-center gap-2 overflow-x-auto">
+              {gallery.map((imgUrl, idx) => (
+                <button
+                  key={`thumb-${idx}`}
+                  type="button"
+                  onClick={() => setActiveImageIdx(idx)}
+                  aria-label={`Seleccionar miniatura ${idx + 1}`}
+                  className={`w-14 h-18 rounded-xl overflow-hidden border shrink-0 transition-all ${
+                    idx === safeIdx
+                      ? 'border-[#231F20] ring-2 ring-[#231F20]/20'
+                      : 'border-[#EAE0DA] opacity-70 hover:opacity-100'
+                  }`}
+                >
+                  <ResilientImage
+                    src={imgUrl}
+                    alt={`${product.name} miniatura ${idx + 1}`}
+                    fallbackLabel={product.name}
+                    className="w-full h-full object-cover"
+                  />
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Contiguous Purchase Module */}
@@ -106,27 +253,48 @@ export function ProductDetailModal({
 
             <p className="text-sm leading-relaxed text-[#574B47]">{product.description}</p>
 
-            {/* Size selector */}
+            {/* Size selector + Size Guide trigger */}
             <div className="space-y-2.5 pt-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-medium text-[#231F20]">Seleccionar talla</span>
-                <span className="text-[#756661]">{stockLabel}</span>
+              <div className="flex flex-wrap items-center justify-between text-xs gap-2">
+                <div className="flex items-center gap-3">
+                  <span className="font-medium text-[#231F20]">Seleccionar talla</span>
+                  <button
+                    type="button"
+                    onClick={() => setSizeGuideOpen(true)}
+                    className="inline-flex items-center gap-1 text-[#8C5E58] hover:text-[#231F20] underline underline-offset-4 font-medium"
+                  >
+                    <Ruler className="w-3.5 h-3.5" strokeWidth={1.6} />
+                    <span>Guía de tallas</span>
+                  </button>
+                </div>
+                <span className="text-[#756661] tabular-nums">{stockLabel}</span>
               </div>
               <div className="flex flex-wrap gap-2">
                 {product.sizes.map((size) => {
-                  const active = selectedSize === size;
+                  const sizeStock = getAvailableStockForSize(product, size);
+                  const sizeUnavailable = product.stock <= 0 || sizeStock <= 0;
+                  const active = activeSize === size && !sizeUnavailable;
                   return (
                     <button
                       key={size}
                       type="button"
-                      onClick={() => setSelectedSize(size)}
-                      className={`min-h-[44px] min-w-[52px] px-4 rounded-xl text-sm font-medium border transition-colors ${
-                        active
-                          ? 'bg-[#231F20] text-[#FBF9F7] border-[#231F20]'
-                          : 'bg-white text-[#231F20] border-[#EAE0DA] hover:border-[#231F20]/40'
+                      disabled={sizeUnavailable}
+                      onClick={() => {
+                        setSelectedSize(size);
+                        setQuantity((q) => Math.max(1, Math.min(q, sizeStock)));
+                      }}
+                      className={`min-h-[44px] min-w-[52px] px-4 rounded-xl text-sm font-medium border transition-colors inline-flex items-center justify-center gap-1.5 ${
+                        sizeUnavailable
+                          ? 'bg-[#F8EFEA]/60 text-[#9E8F8A] border-[#EAE0DA] cursor-not-allowed'
+                          : active
+                            ? 'bg-[#231F20] text-[#FBF9F7] border-[#231F20]'
+                            : 'bg-white text-[#231F20] border-[#EAE0DA] hover:border-[#231F20]/40'
                       }`}
                     >
-                      {size}
+                      <span className={sizeUnavailable ? 'line-through' : ''}>{size}</span>
+                      {sizeUnavailable && (
+                        <span className="text-[11px] font-normal text-[#9E8F8A]">Agotada</span>
+                      )}
                     </button>
                   );
                 })}
@@ -151,15 +319,41 @@ export function ProductDetailModal({
                   </span>
                   <button
                     type="button"
-                    onClick={() => setQuantity((q) => Math.min(product.stock, q + 1))}
+                    disabled={quantity >= selectedSizeStock}
+                    onClick={() => setQuantity((q) => Math.min(selectedSizeStock, q + 1))}
                     aria-label="Aumentar cantidad"
-                    className="min-h-[44px] min-w-[44px] flex items-center justify-center text-[#231F20] hover:bg-[#F8EFEA] rounded-r-xl transition-colors"
+                    className="min-h-[44px] min-w-[44px] flex items-center justify-center text-[#231F20] hover:bg-[#F8EFEA] disabled:opacity-35 rounded-r-xl transition-colors"
                   >
                     <Plus className="w-4 h-4" />
                   </button>
                 </div>
               </div>
             )}
+
+            {/* Shipping & Returns Info Block */}
+            <div className="bg-[#F8EFEA] border border-[#EAE0DA] rounded-xl p-4 space-y-2 text-xs text-[#574B47]">
+              <p className="font-semibold text-[#231F20] flex items-center gap-1.5">
+                <Truck className="w-3.5 h-3.5 text-[#8C5E58]" strokeWidth={1.6} />
+                <span>Envíos y cambios</span>
+              </p>
+              <p className="leading-relaxed">
+                <strong>Tiempos de entrega:</strong> {deliveryTime}.
+              </p>
+              <p className="leading-relaxed tabular-nums">
+                <strong>Envío estándar:</strong> {formatCOP(settings.shippingFee)} · Gratis en
+                compras desde {formatCOP(settings.freeShippingThreshold)}.
+              </p>
+              <p className="flex items-center gap-1.5 pt-0.5">
+                <RefreshCcw className="w-3.5 h-3.5 text-[#8C5E58] shrink-0" strokeWidth={1.6} />
+                <a
+                  href="#cambios"
+                  onClick={onClose}
+                  className="text-[#231F20] font-medium underline underline-offset-4 hover:text-[#8C5E58]"
+                >
+                  Ver política de cambios, garantías y retracto
+                </a>
+              </p>
+            </div>
           </div>
 
           <div className="pt-4 border-t border-[#EAE0DA] space-y-3">
@@ -177,11 +371,76 @@ export function ProductDetailModal({
               </span>
             </button>
             <p className="text-xs text-center text-[#756661]">
-              Cambios sin costo dentro de los primeros 15 días
+              Derecho de retracto en 5 días hábiles · Cambios sujetos a disponibilidad
             </p>
           </div>
         </div>
       </div>
+
+      {/* Nested Size Guide Modal */}
+      {sizeGuideOpen && (
+        <div
+          className="fixed inset-0 z-60 flex items-center justify-center bg-[#231F20]/50 backdrop-blur-xs p-4"
+          onClick={(e) => {
+            e.stopPropagation();
+            setSizeGuideOpen(false);
+          }}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Guía de tallas Mía Store"
+        >
+          <div
+            className="w-full max-w-lg bg-[#FBF9F7] border border-[#EAE0DA] rounded-2xl p-6 space-y-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-[#EAE0DA] pb-3">
+              <div>
+                <h3 className="font-display text-2xl font-medium text-[#231F20]">Guía de Tallas</h3>
+                <p className="text-xs text-[#756661]">
+                  Medidas de referencia corporales expresadas en centímetros (cm).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSizeGuideOpen(false)}
+                aria-label="Cerrar guía de tallas"
+                className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-full hover:bg-[#F8EFEA] text-[#231F20]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-[#EAE0DA] text-[#756661]">
+                    <th className="py-2.5 pr-3 font-medium">Talla</th>
+                    <th className="py-2.5 px-3 font-medium">Busto</th>
+                    <th className="py-2.5 px-3 font-medium">Cintura</th>
+                    <th className="py-2.5 pl-3 font-medium">Cadera</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#EAE0DA] text-[#231F20] tabular-nums">
+                  {sizeGuideRows.map((row) => (
+                    <tr key={row.size}>
+                      <td className="py-2.5 pr-3 font-semibold">{row.size}</td>
+                      <td className="py-2.5 px-3 text-[#574B47]">{row.bust}</td>
+                      <td className="py-2.5 px-3 text-[#574B47]">{row.waist}</td>
+                      <td className="py-2.5 pl-3 text-[#574B47]">{row.hip}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="bg-[#F8EFEA] border border-[#EAE0DA] rounded-xl p-3.5 text-xs text-[#574B47] leading-relaxed">
+              Si estás entre dos tallas y prefieres un calce más holgado, te sugerimos elegir la
+              talla superior o escribirnos por WhatsApp para asesorarte según el corte de esta
+              prenda.
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

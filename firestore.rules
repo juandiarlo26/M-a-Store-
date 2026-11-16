@@ -59,7 +59,7 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'sku', 'name', 'description', 'price', 'category', 'color',
-          'sizes', 'imageUrl', 'stock', 'featured', 'active', 'lastOrderId', 'createdAt', 'updatedAt'
+          'sizes', 'stockBySize', 'imageUrl', 'images', 'stock', 'featured', 'active', 'lastOrderId', 'createdAt', 'updatedAt'
         ]) &&
         (!('sku' in data) || (data.sku is string && data.sku.size() >= 2 && data.sku.size() <= 32 && data.sku.matches('^[A-Z0-9\\-]+$'))) &&
         data.name is string && data.name.size() >= 2 && data.name.size() <= 120 &&
@@ -68,7 +68,27 @@ service cloud.firestore {
         data.category in ['Vestidos', 'Blusas', 'Blazers', 'Conjuntos', 'Faldas', 'Pantalones', 'Accesorios'] &&
         data.color is string && data.color.size() >= 2 && data.color.size() <= 40 &&
         data.sizes is list && data.sizes.size() >= 1 && data.sizes.size() <= 10 && data.sizes[0] is string &&
+        (!('stockBySize' in data) || (
+          data.stockBySize is map &&
+          data.stockBySize.size() >= 1 &&
+          data.stockBySize.size() <= 10 &&
+          data.stockBySize.keys().hasOnly(['XS', 'S', 'M', 'L', 'XL', 'Única']) &&
+          data.stockBySize.get('XS', 0) is int && data.stockBySize.get('XS', 0) >= 0 &&
+          data.stockBySize.get('S', 0) is int && data.stockBySize.get('S', 0) >= 0 &&
+          data.stockBySize.get('M', 0) is int && data.stockBySize.get('M', 0) >= 0 &&
+          data.stockBySize.get('L', 0) is int && data.stockBySize.get('L', 0) >= 0 &&
+          data.stockBySize.get('XL', 0) is int && data.stockBySize.get('XL', 0) >= 0 &&
+          data.stockBySize.get('Única', 0) is int && data.stockBySize.get('Única', 0) >= 0
+        )) &&
         data.imageUrl is string && data.imageUrl.size() >= 4 && data.imageUrl.size() <= 450000 &&
+        (!('images' in data) || (
+          data.images is list &&
+          data.images.size() >= 1 &&
+          data.images.size() <= 6 &&
+          data.images[0] is string &&
+          data.images[0].size() >= 4 &&
+          data.images[0].size() <= 450000
+        )) &&
         data.stock is int && data.stock >= 0 && data.stock <= 100000 &&
         data.featured is bool &&
         data.active is bool &&
@@ -85,7 +105,7 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'orderNumber', 'userId', 'customerName', 'customerEmail', 'customerPhone',
-          'shippingAddress', 'city', 'notes', 'items', 'stockDeltas', 'subtotal', 'discountAmount', 'discountCode',
+          'shippingAddress', 'city', 'notes', 'items', 'stockDeltas', 'sizeDeltas', 'subtotal', 'discountAmount', 'discountCode',
           'shippingCost', 'total', 'paymentMethod', 'paymentStatus', 'paymentReference', 'status',
           'createdAt', 'updatedAt'
         ]) &&
@@ -100,6 +120,7 @@ service cloud.firestore {
         (!('discountCode' in data) || (data.discountCode is string && data.discountCode.size() <= 40)) &&
         data.items is list && data.items.size() >= 1 && data.items.size() <= 20 && data.items[0] is map &&
         (!('stockDeltas' in data) || (data.stockDeltas is map && data.stockDeltas.size() >= 1 && data.stockDeltas.size() <= 20)) &&
+        (!('sizeDeltas' in data) || (data.sizeDeltas is map && data.sizeDeltas.size() >= 1 && data.sizeDeltas.size() <= 20)) &&
         (data.subtotal is int || data.subtotal is float) && data.subtotal >= 0 &&
         (data.discountAmount is int || data.discountAmount is float) && data.discountAmount >= 0 && data.discountAmount <= (data.subtotal * 0.11) &&
         (data.shippingCost is int || data.shippingCost is float) && data.shippingCost >= 0 &&
@@ -117,7 +138,7 @@ service cloud.firestore {
           'uid', 'name', 'email', 'welcomeDiscountUsed', 'ordersCount', 'registeredAt', 'lastSeenAt'
         ]) &&
         data.keys().hasOnly([
-          'uid', 'name', 'email', 'phone', 'welcomeDiscountUsed', 'ordersCount', 'registeredAt', 'lastSeenAt'
+          'uid', 'name', 'email', 'phone', 'welcomeDiscountUsed', 'ordersCount', 'privacyConsentAt', 'registeredAt', 'lastSeenAt'
         ]) &&
         data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
@@ -125,6 +146,7 @@ service cloud.firestore {
         (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
         data.welcomeDiscountUsed is bool &&
         data.ordersCount is int && data.ordersCount >= 0 && data.ordersCount <= 100000 &&
+        (!('privacyConsentAt' in data) || data.privacyConsentAt is timestamp) &&
         data.registeredAt is timestamp &&
         data.lastSeenAt is timestamp;
     }
@@ -144,14 +166,43 @@ service cloud.firestore {
           'announcementText', 'freeShippingThreshold', 'shippingFee', 'heroTitle', 'heroSubtitle', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
-          'announcementText', 'freeShippingThreshold', 'shippingFee', 'heroTitle', 'heroSubtitle', 'updatedAt'
+          'announcementText', 'freeShippingThreshold', 'shippingFee', 'heroTitle', 'heroSubtitle',
+          'launchMode', 'launchDate', 'metaPixelId', 'gaMeasurementId',
+          'deliveryTimeText', 'sizeGuide',
+          'legalBusinessName', 'legalDocumentId', 'legalAddress', 'legalCity',
+          'legalEmail', 'legalPhone', 'legalUpdatedAt',
+          'updatedAt'
         ]) &&
         data.announcementText is string && data.announcementText.size() <= 140 &&
         (data.freeShippingThreshold is int || data.freeShippingThreshold is float) && data.freeShippingThreshold >= 0 &&
         (data.shippingFee is int || data.shippingFee is float) && data.shippingFee >= 0 &&
         data.heroTitle is string && data.heroTitle.size() >= 4 && data.heroTitle.size() <= 100 &&
         data.heroSubtitle is string && data.heroSubtitle.size() >= 4 && data.heroSubtitle.size() <= 240 &&
+        (!('launchMode' in data) || data.launchMode in ['proximamente', 'abierta']) &&
+        (!('launchDate' in data) || data.launchDate == null || data.launchDate is timestamp) &&
+        (!('metaPixelId' in data) || data.metaPixelId == '' || (data.metaPixelId is string && data.metaPixelId.matches('^[0-9]{10,20}$'))) &&
+        (!('gaMeasurementId' in data) || data.gaMeasurementId == '' || (data.gaMeasurementId is string && data.gaMeasurementId.matches('^G-[A-Z0-9]{6,16}$'))) &&
+        (!('deliveryTimeText' in data) || (data.deliveryTimeText is string && data.deliveryTimeText.size() <= 160)) &&
+        (!('sizeGuide' in data) || (data.sizeGuide is list && data.sizeGuide.size() >= 1 && data.sizeGuide.size() <= 10 && data.sizeGuide[0] is map)) &&
+        (!('legalBusinessName' in data) || (data.legalBusinessName is string && data.legalBusinessName.size() <= 140)) &&
+        (!('legalDocumentId' in data) || (data.legalDocumentId is string && data.legalDocumentId.size() <= 40)) &&
+        (!('legalAddress' in data) || (data.legalAddress is string && data.legalAddress.size() <= 180)) &&
+        (!('legalCity' in data) || (data.legalCity is string && data.legalCity.size() <= 80)) &&
+        (!('legalEmail' in data) || (data.legalEmail is string && data.legalEmail.size() <= 160)) &&
+        (!('legalPhone' in data) || (data.legalPhone is string && data.legalPhone.size() <= 30)) &&
+        (!('legalUpdatedAt' in data) || (data.legalUpdatedAt is string && data.legalUpdatedAt.size() <= 40)) &&
         data.updatedAt is timestamp;
+    }
+
+    function isValidWaitlistEntry(data, entryId) {
+      return isValidId(entryId) &&
+        data.keys().hasAll(['name', 'phone', 'consent', 'createdAt']) &&
+        data.keys().hasOnly(['name', 'phone', 'consent', 'createdAt']) &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 80 &&
+        data.phone is string && data.phone.matches('^573[0-9]{9}$') &&
+        entryId == data.phone &&
+        data.consent == true &&
+        data.createdAt == request.time;
     }
 
     function isValidAdmin(data) {
@@ -160,6 +211,24 @@ service cloud.firestore {
         data.email is string && data.email.size() >= 5 && data.email.size() <= 160 &&
         data.name is string && data.name.size() >= 2 && data.name.size() <= 80 &&
         data.createdAt is timestamp;
+    }
+
+    function isValidOrderCounter(data) {
+      return data.keys().hasAll(['next']) &&
+        data.keys().hasOnly(['next', 'lastOrderId', 'updatedAt']) &&
+        data.next is int &&
+        data.next >= 1 &&
+        data.next <= 10000000 &&
+        (!('lastOrderId' in data) || isValidId(data.lastOrderId)) &&
+        (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    function formatSequentialOrderNumber(n) {
+      return n < 10 ? 'MIA-0000' + string(n) :
+        n < 100 ? 'MIA-000' + string(n) :
+        n < 1000 ? 'MIA-00' + string(n) :
+        n < 10000 ? 'MIA-0' + string(n) :
+        'MIA-' + string(n);
     }
 
     // --- Atomic Order & Discount Integrity Helpers ---
@@ -172,6 +241,29 @@ service cloud.firestore {
         order.status == 'pendiente' &&
         productId in order.stockDeltas &&
         order.stockDeltas[productId] == existing().stock - incoming().stock;
+    }
+
+    function isValidBuyerStockBySizeUpdate() {
+      return (!('stockBySize' in existing()) && !('stockBySize' in incoming())) || (
+        'stockBySize' in existing() &&
+        'stockBySize' in incoming() &&
+        incoming().stockBySize.get('XS', 0) <= existing().stockBySize.get('XS', 0) &&
+        incoming().stockBySize.get('S', 0) <= existing().stockBySize.get('S', 0) &&
+        incoming().stockBySize.get('M', 0) <= existing().stockBySize.get('M', 0) &&
+        incoming().stockBySize.get('L', 0) <= existing().stockBySize.get('L', 0) &&
+        incoming().stockBySize.get('XL', 0) <= existing().stockBySize.get('XL', 0) &&
+        incoming().stockBySize.get('Única', 0) <= existing().stockBySize.get('Única', 0)
+      );
+    }
+
+    function isCounterMatchedByNewOrder() {
+      let orderId = incoming().lastOrderId;
+      let order = getAfter(/databases/$(database)/documents/orders/$(orderId)).data;
+      return isValidId(orderId) &&
+        order.userId == request.auth.uid &&
+        order.createdAt == request.time &&
+        order.status == 'pendiente' &&
+        order.orderNumber == formatSequentialOrderNumber(existing().next);
     }
 
     function isWelcomeDiscountLegit() {
@@ -206,9 +298,10 @@ service cloud.firestore {
         incoming().updatedAt == request.time && (
           (
             existing().active == true &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'updatedAt', 'lastOrderId']) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'updatedAt', 'lastOrderId', 'stockBySize']) &&
             incoming().stock >= 0 &&
             incoming().stock < existing().stock &&
+            isValidBuyerStockBySizeUpdate() &&
             'lastOrderId' in incoming() &&
             isStockReservedByNewOrder(productId)
           ) ||
@@ -242,6 +335,26 @@ service cloud.firestore {
       allow delete: if isVerifiedUser() && isValidId(orderId) && isAdmin();
     }
 
+    // Sequential order counter (MIA-00001) with atomic transaction check
+    match /counters/{counterId} {
+      allow get: if isVerifiedUser() && counterId == 'orders';
+      allow create: if isVerifiedUser() &&
+        counterId == 'orders' &&
+        isAdmin() &&
+        isValidOrderCounter(incoming());
+      allow update: if isVerifiedUser() &&
+        counterId == 'orders' &&
+        isValidOrderCounter(incoming()) && (
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly(['next', 'lastOrderId', 'updatedAt']) &&
+            incoming().next == existing().next + 1 &&
+            'lastOrderId' in incoming() &&
+            isCounterMatchedByNewOrder()
+          ) ||
+          isAdmin()
+        );
+    }
+
     // Registered customers: strict PII isolation and one-time welcome discount lock
     match /customers/{uid} {
       allow get: if isValidId(uid) && isVerifiedUser() && (request.auth.uid == uid || isAdmin());
@@ -256,6 +369,7 @@ service cloud.firestore {
           (incoming().welcomeDiscountUsed == false && incoming().ordersCount == 0) ||
           (incoming().welcomeDiscountUsed == true && incoming().ordersCount == 1)
         ) &&
+        (!('privacyConsentAt' in incoming()) || incoming().privacyConsentAt == request.time) &&
         incoming().registeredAt == request.time &&
         incoming().lastSeenAt == request.time;
       allow update: if isVerifiedUser() &&
@@ -266,11 +380,12 @@ service cloud.firestore {
         incoming().registeredAt == existing().registeredAt &&
         incoming().lastSeenAt == request.time && (
           (
-            request.auth.uid == uid && (
-              incoming().diff(existing()).affectedKeys().hasOnly(['lastSeenAt', 'name']) ||
+            request.auth.uid == uid &&
+            (!('privacyConsentAt' in incoming()) || incoming().privacyConsentAt == request.time || ('privacyConsentAt' in existing() && incoming().privacyConsentAt == existing().privacyConsentAt)) && (
+              incoming().diff(existing()).affectedKeys().hasOnly(['lastSeenAt', 'name', 'privacyConsentAt']) ||
               (
                 incoming().diff(existing()).affectedKeys().hasOnly([
-                  'welcomeDiscountUsed', 'ordersCount', 'phone', 'name', 'lastSeenAt'
+                  'welcomeDiscountUsed', 'ordersCount', 'phone', 'name', 'lastSeenAt', 'privacyConsentAt'
                 ]) &&
                 incoming().ordersCount == existing().ordersCount + 1 &&
                 (existing().welcomeDiscountUsed == false || incoming().welcomeDiscountUsed == true)
@@ -329,6 +444,13 @@ service cloud.firestore {
         isValidAdmin(incoming()) &&
         incoming().createdAt == existing().createdAt;
       allow delete: if isBootstrappedAdmin() && isValidId(uid);
+    }
+
+    // Pre-launch waitlist: public create-only with normalized Colombian WhatsApp as ID
+    match /waitlist/{entryId} {
+      allow get, list, delete: if isAdmin();
+      allow create: if isValidWaitlistEntry(incoming(), entryId);
+      allow update: if false;
     }
   }
 }
