@@ -59,7 +59,7 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'sku', 'name', 'description', 'price', 'category', 'color',
-          'sizes', 'imageUrl', 'stock', 'featured', 'active', 'createdAt', 'updatedAt'
+          'sizes', 'imageUrl', 'stock', 'featured', 'active', 'lastOrderId', 'createdAt', 'updatedAt'
         ]) &&
         (!('sku' in data) || (data.sku is string && data.sku.size() >= 2 && data.sku.size() <= 32 && data.sku.matches('^[A-Z0-9\\-]+$'))) &&
         data.name is string && data.name.size() >= 2 && data.name.size() <= 120 &&
@@ -72,6 +72,7 @@ service cloud.firestore {
         data.stock is int && data.stock >= 0 && data.stock <= 100000 &&
         data.featured is bool &&
         data.active is bool &&
+        (!('lastOrderId' in data) || isValidId(data.lastOrderId)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -84,7 +85,7 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'orderNumber', 'userId', 'customerName', 'customerEmail', 'customerPhone',
-          'shippingAddress', 'city', 'notes', 'items', 'subtotal', 'discountAmount', 'discountCode',
+          'shippingAddress', 'city', 'notes', 'items', 'stockDeltas', 'subtotal', 'discountAmount', 'discountCode',
           'shippingCost', 'total', 'paymentMethod', 'paymentStatus', 'paymentReference', 'status',
           'createdAt', 'updatedAt'
         ]) &&
@@ -98,6 +99,7 @@ service cloud.firestore {
         (!('notes' in data) || (data.notes is string && data.notes.size() <= 300)) &&
         (!('discountCode' in data) || (data.discountCode is string && data.discountCode.size() <= 40)) &&
         data.items is list && data.items.size() >= 1 && data.items.size() <= 20 && data.items[0] is map &&
+        (!('stockDeltas' in data) || (data.stockDeltas is map && data.stockDeltas.size() >= 1 && data.stockDeltas.size() <= 20)) &&
         (data.subtotal is int || data.subtotal is float) && data.subtotal >= 0 &&
         (data.discountAmount is int || data.discountAmount is float) && data.discountAmount >= 0 && data.discountAmount <= (data.subtotal * 0.11) &&
         (data.shippingCost is int || data.shippingCost is float) && data.shippingCost >= 0 &&
@@ -160,6 +162,26 @@ service cloud.firestore {
         data.createdAt is timestamp;
     }
 
+    // --- Atomic Order & Discount Integrity Helpers ---
+    function isStockReservedByNewOrder(productId) {
+      let orderId = incoming().lastOrderId;
+      let order = getAfter(/databases/$(database)/documents/orders/$(orderId)).data;
+      return isValidId(orderId) &&
+        order.userId == request.auth.uid &&
+        order.createdAt == request.time &&
+        order.status == 'pendiente' &&
+        productId in order.stockDeltas &&
+        order.stockDeltas[productId] == existing().stock - incoming().stock;
+    }
+
+    function isWelcomeDiscountLegit() {
+      let customerPath = /databases/$(database)/documents/customers/$(request.auth.uid);
+      return incoming().discountAmount == 0 || (
+        (!exists(customerPath) || get(customerPath).data.welcomeDiscountUsed == false) &&
+        getAfter(customerPath).data.welcomeDiscountUsed == true
+      );
+    }
+
     // --- Collection Rules ---
 
     // Connection check path used on app boot
@@ -184,9 +206,11 @@ service cloud.firestore {
         incoming().updatedAt == request.time && (
           (
             existing().active == true &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'updatedAt']) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'updatedAt', 'lastOrderId']) &&
             incoming().stock >= 0 &&
-            incoming().stock < existing().stock
+            incoming().stock < existing().stock &&
+            'lastOrderId' in incoming() &&
+            isStockReservedByNewOrder(productId)
           ) ||
           isAdmin()
         );
@@ -201,6 +225,8 @@ service cloud.firestore {
         isValidId(orderId) &&
         isValidOrder(incoming()) &&
         incoming().userId == request.auth.uid &&
+        'stockDeltas' in incoming() &&
+        isWelcomeDiscountLegit() &&
         incoming().status == 'pendiente' &&
         incoming().paymentStatus == 'pendiente_pago' &&
         incoming().createdAt == request.time &&

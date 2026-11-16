@@ -699,12 +699,27 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
         const items = Array.isArray(data.items) ? (data.items as OrderItem[]) : [];
         const qtyByProduct = new Map<string, number>();
-        for (const item of items) {
-          if (item?.productId && Number(item.quantity) > 0) {
-            qtyByProduct.set(
-              item.productId,
-              (qtyByProduct.get(item.productId) || 0) + Number(item.quantity)
-            );
+        if (
+          data.stockDeltas &&
+          typeof data.stockDeltas === 'object' &&
+          !Array.isArray(data.stockDeltas)
+        ) {
+          for (const [productId, rawQty] of Object.entries(
+            data.stockDeltas as Record<string, unknown>
+          )) {
+            const qty = Math.floor(Number(rawQty));
+            if (productId && qty > 0) {
+              qtyByProduct.set(productId, qty);
+            }
+          }
+        } else {
+          for (const item of items) {
+            if (item?.productId && Number(item.quantity) > 0) {
+              qtyByProduct.set(
+                item.productId,
+                (qtyByProduct.get(item.productId) || 0) + Number(item.quantity)
+              );
+            }
           }
         }
 
@@ -1033,6 +1048,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           for (const upd of productUpdates) {
             transaction.update(upd.ref, {
               stock: upd.newStock,
+              lastOrderId: orderId,
               updatedAt: serverTimestamp(),
             });
           }
@@ -1058,6 +1074,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             });
           }
 
+          const stockDeltas = Object.fromEntries(qtyByProduct);
+
           const orderDoc: Record<string, unknown> = {
             orderNumber,
             userId: uid,
@@ -1079,6 +1097,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
                   ? item.imageUrl
                   : '',
             })),
+            stockDeltas,
             subtotal: computedSubtotal,
             discountAmount: appliedDiscount,
             shippingCost: finalShipping,
@@ -1131,6 +1150,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           quantity: item.quantity,
           imageUrl: item.imageUrl,
         })),
+        stockDeltas: Object.fromEntries(qtyByProduct),
         subtotal: computedSubtotal,
         discountAmount: appliedDiscount,
         discountCode: appliedCode,

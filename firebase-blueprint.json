@@ -61,6 +61,13 @@
           "type": "boolean",
           "description": "Indica si la prenda está publicada y visible en la tienda."
         },
+        "lastOrderId": {
+          "type": "string",
+          "description": "ID del último pedido atómico que reservó inventario de esta prenda.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -142,6 +149,10 @@
         "items": {
           "type": "array",
           "description": "Listado acotado de prendas incluidas en el pedido (1 a 20)."
+        },
+        "stockDeltas": {
+          "type": "object",
+          "description": "Mapa de unidades descontadas por productId en la transacción de compra."
         },
         "subtotal": {
           "type": "number",

@@ -121,6 +121,7 @@ export interface Order {
   city: string;
   notes?: string;
   items: OrderItem[];
+  stockDeltas?: Record<string, number>;
   subtotal: number;
   discountAmount: number;
   discountCode?: string;
