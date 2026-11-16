@@ -28,6 +28,7 @@ interface StorefrontProps {
 export function Storefront({ onOpenAdmin, isComingSoonPreview = false }: StorefrontProps) {
   const {
     user,
+    isEmailVerified,
     isAdmin,
     isEligibleForWelcomeDiscount,
     products,
@@ -42,6 +43,12 @@ export function Storefront({ onOpenAdmin, isComingSoonPreview = false }: Storefr
   const [cartOpen, setCartOpen] = useState(false);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [accountInitialTab, setAccountInitialTab] = useState<'login' | 'register'>('register');
+
+  const openAccountWithTab = (tab: 'login' | 'register') => {
+    setAccountInitialTab(tab);
+    setAccountOpen(true);
+  };
 
   const visibleProducts = useMemo(() => {
     return products.filter((p) => p.active);
@@ -130,10 +137,16 @@ export function Storefront({ onOpenAdmin, isComingSoonPreview = false }: Storefr
             </a>
             <button
               type="button"
-              onClick={() => (isAdmin ? onOpenAdmin() : setAccountOpen(true))}
+              onClick={() => (isAdmin ? onOpenAdmin() : openAccountWithTab(user ? 'login' : 'register'))}
               className="hover:text-[#231F20] hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              {isAdmin ? 'Panel Admin' : user ? 'Mis Pedidos' : 'Regístrate (10%)'}
+              {isAdmin
+                ? 'Panel Admin'
+                : user
+                  ? isEmailVerified
+                    ? 'Mis Pedidos'
+                    : 'Verificar cuenta'
+                  : 'Regístrate (10%)'}
             </button>
           </nav>
 
@@ -217,12 +230,38 @@ export function Storefront({ onOpenAdmin, isComingSoonPreview = false }: Storefr
                   primer pedido.
                 </p>
               </div>
+              <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => openAccountWithTab('login')}
+                  className="min-h-[44px] px-4 py-2 rounded-xl border border-[#EAE0DA] bg-[#FBF9F7] text-[#231F20] text-xs font-medium hover:bg-[#F8EFEA] transition-colors whitespace-nowrap"
+                >
+                  Ingresar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openAccountWithTab('register')}
+                  className="min-h-[44px] px-5 py-2 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium hover:bg-[#3A3335] transition-colors whitespace-nowrap"
+                >
+                  Registrarme · 10% OFF
+                </button>
+              </div>
+            </div>
+          ) : !isEmailVerified ? (
+            <div className="bg-[#FFF7ED] border border-[#FED7AA] rounded-2xl px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-sm text-[#7C2D12]">
+              <div className="flex items-start sm:items-center gap-3">
+                <Mail className="w-5 h-5 text-[#9A3412] shrink-0 mt-0.5 sm:mt-0" strokeWidth={1.6} />
+                <p className="text-xs sm:text-sm">
+                  <strong>Verifica tu correo ({user.email})</strong> para activar tu 10% de
+                  bienvenida y confirmar pedidos. Mientras tanto puedes armar tu bolsa.
+                </p>
+              </div>
               <button
                 type="button"
-                onClick={() => setAccountOpen(true)}
-                className="min-h-[44px] px-5 py-2 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium hover:bg-[#3A3335] transition-colors whitespace-nowrap shrink-0"
+                onClick={() => openAccountWithTab('login')}
+                className="min-h-[42px] px-4 py-2 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium hover:bg-[#3A3335] transition-colors whitespace-nowrap shrink-0"
               >
-                Registrarme · 10% OFF
+                Verificar correo
               </button>
             </div>
           ) : (
@@ -613,11 +652,13 @@ export function Storefront({ onOpenAdmin, isComingSoonPreview = false }: Storefr
       <CheckoutModal
         open={checkoutOpen}
         onClose={() => setCheckoutOpen(false)}
-        onViewOrders={() => setAccountOpen(true)}
+        onViewOrders={() => openAccountWithTab('login')}
+        onOpenAccountModal={openAccountWithTab}
       />
 
       <AccountAndOrdersModal
         open={accountOpen}
+        initialTab={accountInitialTab}
         onClose={() => setAccountOpen(false)}
         onOpenAdmin={onOpenAdmin}
       />

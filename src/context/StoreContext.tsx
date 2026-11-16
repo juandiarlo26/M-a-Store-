@@ -27,10 +27,16 @@ import { configurePixels, trackAddToCart, trackLead, trackPurchase } from '../li
 import {
   auth,
   db,
+  formatFirebaseAuthError,
   handleFirestoreError,
   OperationType,
+  reloadCurrentFirebaseUser,
+  requestPasswordReset,
+  sendVerificationEmailToCurrentUser,
+  signInWithEmailPassword,
   signInWithGoogle,
   signOutUser,
+  signUpWithEmailPassword,
   testConnection,
 } from '../lib/firebase';
 import { normalizeSku } from '../lib/skuUtils';
@@ -67,6 +73,22 @@ import {
 } from '../types/store';
 
 const CART_STORAGE_KEY = 'mia_store_cart_v1';
+const PENDING_PROFILE_STORAGE_KEY = 'mia_pending_customer_v1';
+
+interface PendingCustomerMeta {
+  uid: string;
+  name: string;
+  phone?: string;
+  acceptedPrivacy: boolean;
+}
+
+export interface EmailRegistrationPayload {
+  name: string;
+  email: string;
+  phone?: string;
+  password: string;
+  acceptedPrivacy: boolean;
+}
 
 interface CheckoutPayload {
   customerName: string;
@@ -97,6 +119,7 @@ export interface ProductInput {
 interface StoreContextValue {
   user: User | null;
   authReady: boolean;
+  isEmailVerified: boolean;
   isAdmin: boolean;
   isOwner: boolean;
   customerProfile: CustomerProfile | null;
@@ -121,6 +144,11 @@ interface StoreContextValue {
   shippingCost: number;
   cartTotal: number;
   loginWithGoogle: (acceptedPrivacy?: boolean) => Promise<User>;
+  registerWithEmail: (payload: EmailRegistrationPayload) => Promise<User>;
+  loginWithEmail: (email: string, password: string) => Promise<User>;
+  resendVerificationEmail: () => Promise<void>;
+  sendPasswordReset: (email: string) => Promise<void>;
+  refreshEmailVerification: () => Promise<boolean>;
   logout: () => Promise<void>;
   addToCart: (product: Product, size: string, quantity?: number) => void;
   updateCartQuantity: (productId: string, size: string, quantity: number) => void;
@@ -306,8 +334,11 @@ function sanitizeProductInput(input: ProductInput): ProductInput {
 
 export function StoreProvider({ children }: { children: React.ReactNode }) {
   const pendingPrivacyConsentRef = useRef(false);
+  const pendingCustomerMetaRef = useRef<PendingCustomerMeta | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const [isEmailVerified, setIsEmailVerified] = useState(false);
+  const [authRefreshTick, setAuthRefreshTick] = useState(0);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isOwner, setIsOwner] = useState(false);
 
@@ -349,82 +380,129 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     testConnection();
   }, []);
 
+  const syncVerifiedUserSetup = useCallback(async (nextUser: User | null) => {
+    setUser(nextUser);
+    if (!nextUser || !nextUser.emailVerified) {
+      setIsEmailVerified(false);
+      setIsOwner(false);
+      setIsAdmin(false);
+      setCustomerProfile(null);
+      setAuthReady(true);
+      return;
+    }
+
+    setIsEmailVerified(true);
+    const email = (nextUser.email || '').toLowerCase();
+    const ownerMatch = BOOTSTRAPPED_ADMIN_EMAILS.includes(email);
+    setIsOwner(ownerMatch);
+
+    let adminMatch = ownerMatch;
+    if (!adminMatch && email) {
+      try {
+        const [staffSnap, adminSnap] = await Promise.all([
+          getDoc(doc(db, 'staff', email)),
+          getDoc(doc(db, 'admins', nextUser.uid)),
+        ]);
+        adminMatch = staffSnap.exists() || adminSnap.exists();
+      } catch {
+        adminMatch = false;
+      }
+    }
+    setIsAdmin(adminMatch);
+
+    // Recover any pending registration details saved before email verification
+    let pendingMeta = pendingCustomerMetaRef.current;
+    if (!pendingMeta || pendingMeta.uid !== nextUser.uid) {
+      try {
+        const rawPending = localStorage.getItem(PENDING_PROFILE_STORAGE_KEY);
+        if (rawPending) {
+          const parsed = JSON.parse(rawPending) as Partial<PendingCustomerMeta>;
+          if (parsed && parsed.uid === nextUser.uid) {
+            pendingMeta = {
+              uid: String(parsed.uid),
+              name: typeof parsed.name === 'string' ? parsed.name : '',
+              phone: typeof parsed.phone === 'string' ? parsed.phone : undefined,
+              acceptedPrivacy: Boolean(parsed.acceptedPrivacy),
+            };
+          }
+        }
+      } catch {
+        // Ignore storage read errors
+      }
+    }
+
+    // Register or update customer profile in Firestore once verified
+    const customerRef = doc(db, 'customers', nextUser.uid);
+    try {
+      const existingSnap = await getDoc(customerRef);
+      const safeName = (
+        nextUser.displayName ||
+        pendingMeta?.name ||
+        email.split('@')[0] ||
+        'Clienta'
+      )
+        .trim()
+        .slice(0, 100);
+      const pendingPhone = pendingMeta?.phone ? pendingMeta.phone.trim().slice(0, 30) : undefined;
+      const hasConsent = pendingPrivacyConsentRef.current || Boolean(pendingMeta?.acceptedPrivacy);
+
+      if (!existingSnap.exists()) {
+        const customerCreateDoc: Record<string, unknown> = {
+          uid: nextUser.uid,
+          name: safeName,
+          email: nextUser.email || email,
+          ...(pendingPhone ? { phone: pendingPhone } : {}),
+          welcomeDiscountUsed: false,
+          ordersCount: 0,
+          registeredAt: serverTimestamp(),
+          lastSeenAt: serverTimestamp(),
+        };
+        if (hasConsent) {
+          customerCreateDoc.privacyConsentAt = serverTimestamp();
+        }
+        await setDoc(customerRef, customerCreateDoc);
+      } else {
+        const customerUpdateDoc: Record<string, unknown> = {
+          name: safeName,
+          lastSeenAt: serverTimestamp(),
+        };
+        if (pendingPhone && !existingSnap.data().phone) {
+          customerUpdateDoc.phone = pendingPhone;
+        }
+        if (hasConsent) {
+          customerUpdateDoc.privacyConsentAt = serverTimestamp();
+        }
+        await updateDoc(customerRef, customerUpdateDoc);
+      }
+
+      pendingPrivacyConsentRef.current = false;
+      if (pendingCustomerMetaRef.current?.uid === nextUser.uid) {
+        pendingCustomerMetaRef.current = null;
+      }
+      try {
+        localStorage.removeItem(PENDING_PROFILE_STORAGE_KEY);
+      } catch {
+        // Ignore storage errors
+      }
+    } catch (err) {
+      console.warn('No se pudo sincronizar el registro de la clienta:', err);
+    } finally {
+      setAuthReady(true);
+    }
+  }, []);
+
   // Auth listener + role check (owner, staff email, or admins UID) + customer registration upsert
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (nextUser) => {
-      setUser(nextUser);
-      if (!nextUser || !nextUser.emailVerified) {
-        setIsOwner(false);
-        setIsAdmin(false);
-        setCustomerProfile(null);
-        setAuthReady(true);
-        return;
-      }
-
-      const email = (nextUser.email || '').toLowerCase();
-      const ownerMatch = BOOTSTRAPPED_ADMIN_EMAILS.includes(email);
-      setIsOwner(ownerMatch);
-
-      let adminMatch = ownerMatch;
-      if (!adminMatch && email) {
-        try {
-          const [staffSnap, adminSnap] = await Promise.all([
-            getDoc(doc(db, 'staff', email)),
-            getDoc(doc(db, 'admins', nextUser.uid)),
-          ]);
-          adminMatch = staffSnap.exists() || adminSnap.exists();
-        } catch {
-          adminMatch = false;
-        }
-      }
-      setIsAdmin(adminMatch);
-
-      // Register or update customer profile in Firestore on login
-      const customerRef = doc(db, 'customers', nextUser.uid);
-      try {
-        const existingSnap = await getDoc(customerRef);
-        const safeName = (nextUser.displayName || email.split('@')[0] || 'Clienta')
-          .trim()
-          .slice(0, 100);
-        if (!existingSnap.exists()) {
-          const customerCreateDoc: Record<string, unknown> = {
-            uid: nextUser.uid,
-            name: safeName,
-            email: nextUser.email || email,
-            welcomeDiscountUsed: false,
-            ordersCount: 0,
-            registeredAt: serverTimestamp(),
-            lastSeenAt: serverTimestamp(),
-          };
-          if (pendingPrivacyConsentRef.current) {
-            customerCreateDoc.privacyConsentAt = serverTimestamp();
-            pendingPrivacyConsentRef.current = false;
-          }
-          await setDoc(customerRef, customerCreateDoc);
-        } else {
-          const customerUpdateDoc: Record<string, unknown> = {
-            name: safeName,
-            lastSeenAt: serverTimestamp(),
-          };
-          if (pendingPrivacyConsentRef.current) {
-            customerUpdateDoc.privacyConsentAt = serverTimestamp();
-            pendingPrivacyConsentRef.current = false;
-          }
-          await updateDoc(customerRef, customerUpdateDoc);
-        }
-      } catch (err) {
-        console.warn('No se pudo sincronizar el registro de la clienta:', err);
-      } finally {
-        setAuthReady(true);
-      }
+      await syncVerifiedUserSetup(nextUser);
     });
 
     return () => unsub();
-  }, []);
+  }, [syncVerifiedUserSetup]);
 
   // Live subscription to current user's customer profile (for 10% first-order discount)
   useEffect(() => {
-    if (!authReady || !user || !user.emailVerified) {
+    if (!authReady || !user || !isEmailVerified) {
       setCustomerProfile(null);
       return;
     }
@@ -454,11 +532,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     );
 
     return () => unsub();
-  }, [authReady, user]);
+  }, [authReady, user, isEmailVerified, authRefreshTick]);
 
   // Admin: live subscription to all registered customers
   useEffect(() => {
-    if (!authReady || !user || !user.emailVerified || !isAdmin) {
+    if (!authReady || !user || !isEmailVerified || !isAdmin) {
       setCustomers([]);
       setCustomersLoading(false);
       return;
@@ -497,11 +575,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     );
 
     return () => unsub();
-  }, [authReady, user, isAdmin]);
+  }, [authReady, user, isEmailVerified, isAdmin, authRefreshTick]);
 
   // Owner: live subscription to staff employee admins
   useEffect(() => {
-    if (!authReady || !user || !user.emailVerified || !isOwner) {
+    if (!authReady || !user || !isEmailVerified || !isOwner) {
       setStaffMembers([]);
       return;
     }
@@ -533,11 +611,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     );
 
     return () => unsub();
-  }, [authReady, user, isOwner]);
+  }, [authReady, user, isEmailVerified, isOwner, authRefreshTick]);
 
   // Admin: live subscription to pre-launch waitlist
   useEffect(() => {
-    if (!authReady || !user || !user.emailVerified || !isAdmin) {
+    if (!authReady || !user || !isEmailVerified || !isAdmin) {
       setWaitlistEntries([]);
       setWaitlistLoading(false);
       return;
@@ -572,7 +650,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     );
 
     return () => unsub();
-  }, [authReady, user, isAdmin]);
+  }, [authReady, user, isEmailVerified, isAdmin, authRefreshTick]);
 
   // Subscribe to store settings
   useEffect(() => {
@@ -726,7 +804,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   // Subscribe to orders only when authenticated & email verified
   useEffect(() => {
-    if (!authReady || !user || !user.emailVerified) {
+    if (!authReady || !user || !isEmailVerified) {
       setOrders([]);
       setOrdersLoading(false);
       setOrdersLoadedOnce(false);
@@ -789,7 +867,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     );
 
     return () => unsub();
-  }, [authReady, user, isAdmin]);
+  }, [authReady, user, isEmailVerified, isAdmin, authRefreshTick]);
 
   // Admin: ensure counters/orders exists once orders are loaded so shoppers get sequential MIA-00001 IDs
   useEffect(() => {
@@ -1389,10 +1467,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const isEligibleForWelcomeDiscount = useMemo(() => {
-    if (!user || !user.emailVerified) return false;
+    if (!user || !isEmailVerified) return false;
     if (!customerProfile) return false;
     return !customerProfile.welcomeDiscountUsed && customerProfile.ordersCount === 0;
-  }, [user, customerProfile]);
+  }, [user, isEmailVerified, customerProfile]);
 
   const cartCount = useMemo(
     () => cart.reduce((acc, item) => acc + item.quantity, 0),
@@ -1419,8 +1497,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const placeOrder = useCallback(
     async (payload: CheckoutPayload): Promise<Order> => {
-      if (!auth.currentUser || !auth.currentUser.emailVerified) {
-        throw new Error('Regístrate o inicia sesión con Google para confirmar tu compra.');
+      if (!auth.currentUser) {
+        throw new Error('Regístrate o inicia sesión para confirmar tu compra.');
+      }
+      if (!auth.currentUser.emailVerified) {
+        throw new Error('Verifica tu correo para confirmar tu pedido.');
       }
       if (cart.length === 0) {
         throw new Error('Tu bolsa de compras está vacía.');
@@ -1748,13 +1829,130 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       return await signInWithGoogle();
     } catch (err) {
       pendingPrivacyConsentRef.current = false;
-      throw err;
+      throw new Error(formatFirebaseAuthError(err));
     }
+  }, []);
+
+  const registerWithEmail = useCallback(async (payload: EmailRegistrationPayload): Promise<User> => {
+    const cleanName = payload.name.trim().slice(0, 100);
+    const cleanEmail = payload.email.trim();
+    const rawPhone = (payload.phone || '').trim();
+
+    if (cleanName.length < 2) {
+      throw new Error('Ingresa tu nombre completo (mínimo 2 caracteres).');
+    }
+    if (!cleanEmail.includes('@') || cleanEmail.length < 5) {
+      throw new Error('Ingresa un correo electrónico válido.');
+    }
+
+    let normalizedPhone: string | undefined;
+    if (rawPhone.length > 0) {
+      const digits = rawPhone.replace(/\D/g, '');
+      const local10 =
+        digits.length === 12 && digits.startsWith('57') ? digits.slice(2) : digits;
+      if (!COLOMBIA_WHATSAPP_10_REGEX.test(local10)) {
+        throw new Error(
+          'Si ingresas celular, debe ser un número colombiano de 10 dígitos que empiece por 3 (ej. 310 123 4567).'
+        );
+      }
+      normalizedPhone = local10;
+    }
+
+    if (payload.password.length < 8) {
+      throw new Error('La contraseña debe tener al menos 8 caracteres.');
+    }
+    if (!payload.acceptedPrivacy) {
+      throw new Error(
+        'Debes autorizar el tratamiento de tus datos personales según la Política de Privacidad.'
+      );
+    }
+
+    pendingPrivacyConsentRef.current = true;
+    try {
+      const createdUser = await signUpWithEmailPassword(cleanName, cleanEmail, payload.password);
+      const pendingMeta: PendingCustomerMeta = {
+        uid: createdUser.uid,
+        name: cleanName,
+        ...(normalizedPhone ? { phone: normalizedPhone } : {}),
+        acceptedPrivacy: true,
+      };
+      pendingCustomerMetaRef.current = pendingMeta;
+      try {
+        localStorage.setItem(PENDING_PROFILE_STORAGE_KEY, JSON.stringify(pendingMeta));
+      } catch {
+        // Ignore storage quota errors
+      }
+      return createdUser;
+    } catch (err) {
+      pendingPrivacyConsentRef.current = false;
+      throw new Error(formatFirebaseAuthError(err));
+    }
+  }, []);
+
+  const loginWithEmail = useCallback(async (email: string, password: string): Promise<User> => {
+    const cleanEmail = email.trim();
+    if (!cleanEmail.includes('@') || cleanEmail.length < 5) {
+      throw new Error('Ingresa tu correo electrónico.');
+    }
+    if (!password) {
+      throw new Error('Ingresa tu contraseña.');
+    }
+    try {
+      const signedUser = await signInWithEmailPassword(cleanEmail, password);
+      await syncVerifiedUserSetup(signedUser);
+      setAuthRefreshTick((n) => n + 1);
+      return signedUser;
+    } catch (err) {
+      throw new Error(formatFirebaseAuthError(err));
+    }
+  }, [syncVerifiedUserSetup]);
+
+  const resendVerificationEmail = useCallback(async (): Promise<void> => {
+    try {
+      await sendVerificationEmailToCurrentUser();
+    } catch (err) {
+      throw new Error(formatFirebaseAuthError(err));
+    }
+  }, []);
+
+  const sendPasswordReset = useCallback(async (email: string): Promise<void> => {
+    const cleanEmail = email.trim();
+    if (!cleanEmail.includes('@') || cleanEmail.length < 5) {
+      throw new Error('Ingresa el correo electrónico de tu cuenta.');
+    }
+    try {
+      await requestPasswordReset(cleanEmail);
+    } catch (err) {
+      throw new Error(formatFirebaseAuthError(err));
+    }
+  }, []);
+
+  const refreshEmailVerification = useCallback(async (): Promise<boolean> => {
+    try {
+      const refreshed = await reloadCurrentFirebaseUser();
+      await syncVerifiedUserSetup(refreshed);
+      setAuthRefreshTick((n) => n + 1);
+      return Boolean(refreshed?.emailVerified);
+    } catch (err) {
+      throw new Error(formatFirebaseAuthError(err));
+    }
+  }, [syncVerifiedUserSetup]);
+
+  const logout = useCallback(async () => {
+    pendingPrivacyConsentRef.current = false;
+    pendingCustomerMetaRef.current = null;
+    try {
+      localStorage.removeItem(PENDING_PROFILE_STORAGE_KEY);
+    } catch {
+      // Ignore storage errors
+    }
+    await signOutUser();
   }, []);
 
   const value: StoreContextValue = {
     user,
     authReady,
+    isEmailVerified,
     isAdmin,
     isOwner,
     customerProfile,
@@ -1779,7 +1977,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     shippingCost,
     cartTotal,
     loginWithGoogle,
-    logout: signOutUser,
+    registerWithEmail,
+    loginWithEmail,
+    resendVerificationEmail,
+    sendPasswordReset,
+    refreshEmailVerification,
+    logout,
     addToCart,
     updateCartQuantity,
     removeFromCart,

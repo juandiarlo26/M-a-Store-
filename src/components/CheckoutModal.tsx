@@ -5,7 +5,9 @@ import {
   Copy,
   Gift,
   LogIn,
+  Mail,
   MessageCircle,
+  RefreshCw,
   ShoppingBag,
   X,
 } from 'lucide-react';
@@ -22,11 +24,19 @@ interface CheckoutModalProps {
   open: boolean;
   onClose: () => void;
   onViewOrders: () => void;
+  onOpenAccountModal?: (tab: 'login' | 'register') => void;
 }
 
-export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProps) {
+export function CheckoutModal({
+  open,
+  onClose,
+  onViewOrders,
+  onOpenAccountModal,
+}: CheckoutModalProps) {
   const {
     user,
+    isEmailVerified,
+    customerProfile,
     cart,
     cartSubtotal,
     welcomeDiscountAmount,
@@ -35,13 +45,18 @@ export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProp
     cartTotal,
     isUsingStarterPreview,
     loginWithGoogle,
+    resendVerificationEmail,
+    refreshEmailVerification,
     placeOrder,
   } = useStore();
 
   const [step, setStep] = useState<'form' | 'success'>('form');
   const [confirmedOrder, setConfirmedOrder] = useState<Order | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
+  const [verifyingBusy, setVerifyingBusy] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
   const [copiedSummary, setCopiedSummary] = useState(false);
   const trackedCheckoutRef = useRef(false);
 
@@ -54,14 +69,26 @@ export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProp
   const [privacyAccepted, setPrivacyAccepted] = useState(false);
 
   useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setResendCooldown((prev) => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendCooldown]);
+
+  useEffect(() => {
     if (open) {
       setStep('form');
       setConfirmedOrder(null);
       setErrorMsg(null);
+      setInfoMsg(null);
       setCopiedSummary(false);
       if (user) {
-        if (!customerName && user.displayName) setCustomerName(user.displayName);
+        if (!customerName && (user.displayName || customerProfile?.name)) {
+          setCustomerName(user.displayName || customerProfile?.name || '');
+        }
         if (!customerEmail && user.email) setCustomerEmail(user.email);
+        if (!customerPhone && customerProfile?.phone) setCustomerPhone(customerProfile.phone);
       }
       if (!trackedCheckoutRef.current && cart.length > 0) {
         trackedCheckoutRef.current = true;
@@ -70,7 +97,7 @@ export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProp
     } else {
       trackedCheckoutRef.current = false;
     }
-  }, [open, user, cart, cartTotal]);
+  }, [open, user, customerProfile, cart, cartTotal]);
 
   if (!open) return null;
 
@@ -96,14 +123,59 @@ export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProp
     }
   };
 
+  const handleCheckVerified = async () => {
+    setErrorMsg(null);
+    setInfoMsg(null);
+    setVerifyingBusy(true);
+    try {
+      const ok = await refreshEmailVerification();
+      if (ok) {
+        setInfoMsg('Correo verificado. Ya puedes confirmar tu pedido.');
+      } else {
+        setErrorMsg(
+          'Tu correo aún aparece sin verificar. Abre el enlace que enviamos a tu correo e inténtalo de nuevo.'
+        );
+      }
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'No pudimos comprobar el estado de tu correo.'
+      );
+    } finally {
+      setVerifyingBusy(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    if (resendCooldown > 0) return;
+    setErrorMsg(null);
+    setInfoMsg(null);
+    setVerifyingBusy(true);
+    try {
+      await resendVerificationEmail();
+      setResendCooldown(60);
+      setInfoMsg('Reenviamos el enlace de verificación en español a tu correo.');
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'No pudimos reenviar el correo de verificación.'
+      );
+    } finally {
+      setVerifyingBusy(false);
+    }
+  };
+
   const handleSubmitOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    setInfoMsg(null);
 
     if (!user) {
       setErrorMsg(
-        'Por favor regístrate o inicia sesión con Google para registrar tu pedido y aplicar tu beneficio.'
+        'Por favor regístrate o inicia sesión para registrar tu pedido y aplicar tu beneficio.'
       );
+      return;
+    }
+    if (!isEmailVerified) {
+      setErrorMsg('Verifica tu correo para confirmar tu pedido.');
       return;
     }
     if (customerName.trim().length < 2) {
@@ -201,6 +273,12 @@ export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProp
             </div>
           )}
 
+          {infoMsg && (
+            <div className="mb-5 text-xs text-[#065F46] bg-[#ECFDF5] border border-[#A7F3D0] rounded-xl px-4 py-3">
+              {infoMsg}
+            </div>
+          )}
+
           {isUsingStarterPreview && step !== 'success' && (
             <div className="mb-5 text-xs text-[#7C2D12] bg-[#FFF7ED] border border-[#FED7AA] rounded-xl px-4 py-3">
               Nota: El catálogo en vivo aún no está publicado en Firebase. Inicia sesión como
@@ -213,27 +291,54 @@ export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProp
             <form onSubmit={handleSubmitOrder} className="space-y-6">
               {!user ? (
                 <div className="bg-[#F8EFEA] border border-[#EAE0DA] rounded-2xl p-5 space-y-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div className="space-y-1">
-                      <p className="text-sm font-semibold text-[#231F20] flex items-center gap-2">
-                        <Gift className="w-4 h-4 text-[#8C5E58]" />
-                        <span>Regístrate y obtén 10% en tu primer pedido</span>
-                      </p>
-                      <p className="text-xs text-[#574B47]">
-                        Al registrarte por primera vez con Google descontamos el 10% automáticamente
-                        y podrás ver el estado de tu pedido en tiempo real.
-                      </p>
-                    </div>
+                  <div className="space-y-1.5">
+                    <p className="text-sm font-semibold text-[#231F20] flex items-center gap-2">
+                      <Gift className="w-4 h-4 text-[#8C5E58]" />
+                      <span>Regístrate y obtén 10% en tu primer pedido</span>
+                    </p>
+                    <p className="text-xs text-[#574B47] leading-relaxed">
+                      Crea tu cuenta o ingresa con tu correo o con Google para descontar el 10%
+                      automáticamente en tu primera compra y seguir tu pedido en tiempo real.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    {onOpenAccountModal && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onClose();
+                            onOpenAccountModal('register');
+                          }}
+                          className="min-h-[44px] px-4 py-2 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium inline-flex items-center justify-center gap-2 hover:bg-[#3A3335]"
+                        >
+                          <Mail className="w-4 h-4" />
+                          <span>Crear cuenta con correo</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onClose();
+                            onOpenAccountModal('login');
+                          }}
+                          className="min-h-[44px] px-4 py-2 rounded-xl border border-[#D8C8BE] bg-white text-[#231F20] text-xs font-medium inline-flex items-center justify-center gap-2 hover:bg-[#FBF9F7]"
+                        >
+                          <span>Ingresar</span>
+                        </button>
+                      </>
+                    )}
                     <button
                       type="button"
                       disabled={processing}
                       onClick={handleGoogleAuth}
-                      className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium inline-flex items-center justify-center gap-2 hover:bg-[#3A3335] shrink-0"
+                      className="min-h-[44px] px-4 py-2 rounded-xl border border-[#D8C8BE] bg-white text-[#231F20] text-xs font-medium inline-flex items-center justify-center gap-2 hover:bg-[#FBF9F7] disabled:opacity-50"
                     >
                       <LogIn className="w-4 h-4" />
-                      <span>{processing ? 'Conectando...' : 'Registrarme con Google'}</span>
+                      <span>{processing ? 'Conectando...' : 'Continuar con Google'}</span>
                     </button>
                   </div>
+
                   <label
                     htmlFor="chk-privacy-auth"
                     className="flex items-start gap-2.5 pt-2 border-t border-[#EAE0DA] cursor-pointer select-none"
@@ -268,6 +373,46 @@ export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProp
                       .
                     </span>
                   </label>
+                </div>
+              ) : !isEmailVerified ? (
+                <div className="bg-[#FFF7ED] border border-[#FED7AA] rounded-2xl p-5 space-y-4">
+                  <div className="flex items-start gap-3">
+                    <Mail className="w-5 h-5 text-[#9A3412] shrink-0 mt-0.5" strokeWidth={1.7} />
+                    <div className="space-y-1">
+                      <p className="text-sm font-semibold text-[#7C2D12]">
+                        Verifica tu correo para confirmar tu pedido
+                      </p>
+                      <p className="text-xs text-[#9A3412] leading-relaxed">
+                        Tu sesión está iniciada con <strong>{user.email}</strong>, pero aún falta
+                        confirmar el enlace que enviamos a tu correo. Revisa tu bandeja o spam y
+                        pulsa «Ya verifiqué».
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2.5">
+                    <button
+                      type="button"
+                      disabled={verifyingBusy}
+                      onClick={handleCheckVerified}
+                      className="min-h-[44px] px-4 py-2 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium inline-flex items-center gap-2 hover:bg-[#3A3335] disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${verifyingBusy ? 'animate-spin' : ''}`} />
+                      <span>{verifyingBusy ? 'Comprobando...' : 'Ya verifiqué'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={verifyingBusy || resendCooldown > 0}
+                      onClick={handleResendVerification}
+                      className="min-h-[44px] px-4 py-2 rounded-xl border border-[#FED7AA] bg-white text-[#7C2D12] text-xs font-medium inline-flex items-center gap-2 hover:bg-[#FFFBF7] disabled:opacity-60 tabular-nums"
+                    >
+                      <Mail className="w-3.5 h-3.5" />
+                      <span>
+                        {resendCooldown > 0
+                          ? `Reenviar correo (${resendCooldown}s)`
+                          : 'Reenviar correo'}
+                      </span>
+                    </button>
+                  </div>
                 </div>
               ) : (
                 isEligibleForWelcomeDiscount && (
@@ -468,14 +613,16 @@ export function CheckoutModal({ open, onClose, onViewOrders }: CheckoutModalProp
 
                 <button
                   type="submit"
-                  disabled={processing}
+                  disabled={processing || (Boolean(user) && !isEmailVerified)}
                   className="w-full min-h-[48px] px-6 py-3 rounded-xl bg-[#231F20] text-[#FBF9F7] text-sm font-medium flex items-center justify-center gap-2 hover:bg-[#3A3335] disabled:opacity-60 transition-colors"
                 >
                   <MessageCircle className="w-4 h-4" />
                   <span>
                     {processing
                       ? 'Registrando solicitud...'
-                      : `Confirmar y solicitar por WhatsApp · ${formatCOP(cartTotal)}`}
+                      : user && !isEmailVerified
+                        ? 'Verifica tu correo para confirmar tu pedido'
+                        : `Confirmar y solicitar por WhatsApp · ${formatCOP(cartTotal)}`}
                   </span>
                 </button>
               </div>
