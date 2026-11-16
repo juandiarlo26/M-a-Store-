@@ -13,12 +13,22 @@ import {
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { formatCOP, getProductImages, HERO_IMAGE_URL } from '../lib/starterCatalog';
-import { BRAND_INFO, type Product } from '../types/store';
+import { BRAND_INFO, PRODUCT_CATEGORIES, type Product, type ProductCategory } from '../types/store';
 import { AccountAndOrdersModal } from './AccountAndOrdersModal';
 import { CartDrawer } from './CartDrawer';
 import { CheckoutModal } from './CheckoutModal';
 import { ProductDetailModal } from './ProductDetailModal';
 import { ResilientImage } from './ResilientImage';
+
+const FIXED_STOREFRONT_SECTIONS: ProductCategory[] = [
+  'Blusas',
+  'Shorts',
+  'Pantalones',
+  'Vestidos',
+  'Conjuntos',
+  'Calzado',
+  'Bolsos',
+];
 
 interface StorefrontProps {
   onOpenAdmin: () => void;
@@ -55,8 +65,11 @@ export function Storefront({ onOpenAdmin, isComingSoonPreview = false }: Storefr
   }, [products]);
 
   const categories = useMemo(() => {
-    const unique = Array.from(new Set(visibleProducts.map((p) => p.category)));
-    return ['Todas', ...unique];
+    const activeCatSet = new Set(visibleProducts.map((p) => p.category));
+    const extras = PRODUCT_CATEGORIES.filter(
+      (cat) => !FIXED_STOREFRONT_SECTIONS.includes(cat) && activeCatSet.has(cat)
+    );
+    return ['Todas', ...FIXED_STOREFRONT_SECTIONS, ...extras];
   }, [visibleProducts]);
 
   const liveSelectedProduct = useMemo(() => {
@@ -306,7 +319,7 @@ export function Storefront({ onOpenAdmin, isComingSoonPreview = false }: Storefr
           </div>
 
           {/* Interactive Category Filter Buttons */}
-          <div className="flex items-center gap-2 overflow-x-auto pb-4 mb-6">
+          <div className="-mx-4 px-4 sm:mx-0 sm:px-0 flex items-center gap-2 overflow-x-auto pb-4 mb-6">
             {categories.map((cat) => {
               const active = selectedCategory === cat;
               return (
@@ -338,25 +351,53 @@ export function Storefront({ onOpenAdmin, isComingSoonPreview = false }: Storefr
               ))}
             </div>
           ) : filteredProducts.length === 0 ? (
-            <div className="bg-white border border-[#EAE0DA] rounded-2xl p-12 text-center space-y-3">
-              <Sparkles className="w-6 h-6 mx-auto text-[#8C5E58]" strokeWidth={1.5} />
-              <p className="font-display text-2xl text-[#231F20]">
-                No encontramos prendas con ese criterio
-              </p>
-              <p className="text-sm text-[#756661]">
-                Prueba seleccionando otra categoría o limpiando el buscador.
-              </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedCategory('Todas');
-                  setSearchTerm('');
-                }}
-                className="min-h-[44px] px-5 py-2 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium"
-              >
-                Ver toda la colección
-              </button>
-            </div>
+            selectedCategory !== 'Todas' &&
+            !visibleProducts.some((p) => p.category === selectedCategory) ? (
+              <div className="bg-white border border-[#EAE0DA] rounded-2xl p-10 sm:p-14 text-center space-y-4">
+                <div className="w-12 h-12 mx-auto rounded-full bg-[#F8EFEA] border border-[#EAE0DA] flex items-center justify-center">
+                  <Sparkles className="w-5 h-5 text-[#8C5E58]" strokeWidth={1.6} />
+                </div>
+                <div className="space-y-1.5 max-w-md mx-auto">
+                  <p className="font-display text-2xl sm:text-3xl text-[#231F20]">
+                    Muy pronto: nuevas piezas de {selectedCategory}
+                  </p>
+                  <p className="text-sm text-[#756661]">
+                    Estamos preparando esta selección para la temporada. Mientras llega, explora las
+                    demás piezas disponibles.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedCategory('Todas');
+                    setSearchTerm('');
+                  }}
+                  className="min-h-[44px] px-6 py-2.5 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium hover:bg-[#3A3335] transition-colors"
+                >
+                  Ver toda la colección
+                </button>
+              </div>
+            ) : (
+              <div className="bg-white border border-[#EAE0DA] rounded-2xl p-12 text-center space-y-3">
+                <Sparkles className="w-6 h-6 mx-auto text-[#8C5E58]" strokeWidth={1.5} />
+                <p className="font-display text-2xl text-[#231F20]">
+                  No encontramos prendas con ese criterio
+                </p>
+                <p className="text-sm text-[#756661]">
+                  Prueba seleccionando otra categoría o limpiando el buscador.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedCategory('Todas');
+                    setSearchTerm('');
+                  }}
+                  className="min-h-[44px] px-5 py-2 rounded-xl bg-[#231F20] text-[#FBF9F7] text-xs font-medium"
+                >
+                  Ver toda la colección
+                </button>
+              </div>
+            )
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 md:gap-8">
               {filteredProducts.map((product) => {
@@ -417,7 +458,9 @@ export function Storefront({ onOpenAdmin, isComingSoonPreview = false }: Storefr
                           {formatCOP(product.price)}
                         </p>
                         <span className="text-xs text-[#574B47] group-hover:text-[#231F20] group-hover:underline underline-offset-4">
-                          Elegir talla
+                          {product.category === 'Bolsos' || product.category === 'Accesorios'
+                            ? 'Ver detalle'
+                            : 'Elegir talla'}
                         </span>
                       </div>
                     </div>

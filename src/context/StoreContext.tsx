@@ -11,6 +11,7 @@ import { onAuthStateChanged, type User } from 'firebase/auth';
 import {
   collection,
   deleteDoc,
+  deleteField,
   doc,
   getDoc,
   onSnapshot,
@@ -42,6 +43,7 @@ import {
 import { normalizeSku } from '../lib/skuUtils';
 import {
   DEFAULT_DELIVERY_TIME_TEXT,
+  DEFAULT_SHOE_SIZE_GUIDE,
   DEFAULT_SIZE_GUIDE,
   DEFAULT_STORE_SETTINGS,
   getProductImages,
@@ -66,6 +68,7 @@ import {
   type PaymentStatus,
   type Product,
   type ProductCategory,
+  type ShoeSizeGuideRow,
   type SizeGuideRow,
   type StaffMember,
   type StoreSettings,
@@ -104,6 +107,7 @@ export interface ProductInput {
   sku?: string;
   name: string;
   description: string;
+  dimensions?: string;
   price: number;
   category: ProductCategory;
   color: string;
@@ -249,11 +253,27 @@ function parseSizeGuide(raw: unknown): SizeGuideRow[] {
   return rows.length > 0 ? rows : DEFAULT_SIZE_GUIDE;
 }
 
+function parseShoeSizeGuide(raw: unknown): ShoeSizeGuideRow[] {
+  if (!Array.isArray(raw) || raw.length === 0) return DEFAULT_SHOE_SIZE_GUIDE;
+  const rows: ShoeSizeGuideRow[] = [];
+  for (const item of raw.slice(0, 12)) {
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as Record<string, unknown>;
+    const size = String(rec.size || '').trim().slice(0, 16);
+    const footLength = String(rec.footLength || '').trim().slice(0, 32);
+    if (size) {
+      rows.push({ size, footLength });
+    }
+  }
+  return rows.length > 0 ? rows : DEFAULT_SHOE_SIZE_GUIDE;
+}
+
 function sanitizeProductInput(input: ProductInput): ProductInput {
   const rawSku = input.sku?.trim() ?? '';
   const sku = rawSku.length > 0 ? normalizeSku(rawSku) : undefined;
   const name = input.name.trim().slice(0, PRODUCT_LIMITS.nameMax);
   const description = input.description.trim().slice(0, PRODUCT_LIMITS.descriptionMax);
+  const rawDimensions = (input.dimensions ?? '').trim().slice(0, PRODUCT_LIMITS.dimensionsMax);
   const color = input.color.trim().slice(0, PRODUCT_LIMITS.colorMax);
   const rawList = Array.isArray(input.images) && input.images.length > 0 ? input.images : [input.imageUrl];
   const cleanImages: string[] = [];
@@ -319,6 +339,7 @@ function sanitizeProductInput(input: ProductInput): ProductInput {
     ...(sku ? { sku } : {}),
     name,
     description,
+    ...(rawDimensions ? { dimensions: rawDimensions } : {}),
     price,
     category: input.category,
     color,
@@ -706,6 +727,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             ...(gaMeasurementId ? { gaMeasurementId } : {}),
             deliveryTimeText,
             sizeGuide: parseSizeGuide(data.sizeGuide),
+            shoeSizeGuide: parseShoeSizeGuide(data.shoeSizeGuide),
             legalBusinessName:
               typeof data.legalBusinessName === 'string' ? data.legalBusinessName : '',
             legalDocumentId:
@@ -764,11 +786,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             imageUrl: String(d.imageUrl || ''),
             images: Array.isArray(d.images) ? d.images.map(String) : undefined,
           });
+          const dimensions =
+            typeof d.dimensions === 'string' && d.dimensions.trim()
+              ? d.dimensions.trim()
+              : undefined;
           return {
             id: docSnap.id,
             sku: d.sku ? String(d.sku) : undefined,
             name: String(d.name || ''),
             description: String(d.description || ''),
+            ...(dimensions ? { dimensions } : {}),
             price: Number(d.price || 0),
             category: d.category as ProductCategory,
             color: String(d.color || ''),
@@ -949,6 +976,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           launchDate: null,
           deliveryTimeText: DEFAULT_DELIVERY_TIME_TEXT,
           sizeGuide: DEFAULT_SIZE_GUIDE,
+          shoeSizeGuide: DEFAULT_SHOE_SIZE_GUIDE,
           updatedAt: serverTimestamp(),
         });
       }
@@ -1022,6 +1050,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       try {
         await updateDoc(doc(db, 'products', productId), {
           ...clean,
+          ...(clean.dimensions ? {} : { dimensions: deleteField() }),
           updatedAt: serverTimestamp(),
         });
       } catch (error) {
@@ -1273,6 +1302,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         .trim()
         .slice(0, SETTINGS_LIMITS.deliveryTimeMax),
       sizeGuide: parseSizeGuide(next.sizeGuide),
+      shoeSizeGuide: parseShoeSizeGuide(next.shoeSizeGuide),
       legalBusinessName: (next.legalBusinessName ?? '')
         .trim()
         .slice(0, SETTINGS_LIMITS.legalBusinessNameMax),

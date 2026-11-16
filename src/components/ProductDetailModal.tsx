@@ -14,6 +14,7 @@ import { getAvailableStockForSize, useStore } from '../context/StoreContext';
 import { trackViewContent } from '../lib/analytics';
 import {
   DEFAULT_DELIVERY_TIME_TEXT,
+  DEFAULT_SHOE_SIZE_GUIDE,
   DEFAULT_SIZE_GUIDE,
   formatCOP,
   getProductImages,
@@ -76,6 +77,14 @@ export function ProductDetailModal({
   const deliveryTime = settings.deliveryTimeText?.trim() || DEFAULT_DELIVERY_TIME_TEXT;
   const sizeGuideRows =
     settings.sizeGuide && settings.sizeGuide.length > 0 ? settings.sizeGuide : DEFAULT_SIZE_GUIDE;
+  const shoeGuideRows =
+    settings.shoeSizeGuide && settings.shoeSizeGuide.length > 0
+      ? settings.shoeSizeGuide
+      : DEFAULT_SHOE_SIZE_GUIDE;
+  const isShoes = product.category === 'Calzado';
+  const isBag = product.category === 'Bolsos';
+  const isAccessory = product.category === 'Accesorios';
+  const showGuideTrigger = !isAccessory && (!isBag || Boolean(product.dimensions));
 
   const stockLabel =
     product.stock <= 0
@@ -253,19 +262,35 @@ export function ProductDetailModal({
 
             <p className="text-sm leading-relaxed text-[#574B47]">{product.description}</p>
 
+            {product.dimensions && (
+              <div className="bg-white border border-[#EAE0DA] rounded-xl px-4 py-3 flex items-start gap-2.5 text-xs text-[#574B47]">
+                <Ruler className="w-4 h-4 text-[#8C5E58] shrink-0 mt-0.5" strokeWidth={1.6} />
+                <div>
+                  <span className="font-semibold text-[#231F20]">
+                    Medidas (alto × ancho × fondo):{' '}
+                  </span>
+                  <span>{product.dimensions}</span>
+                </div>
+              </div>
+            )}
+
             {/* Size selector + Size Guide trigger */}
             <div className="space-y-2.5 pt-2">
               <div className="flex flex-wrap items-center justify-between text-xs gap-2">
                 <div className="flex items-center gap-3">
-                  <span className="font-medium text-[#231F20]">Seleccionar talla</span>
-                  <button
-                    type="button"
-                    onClick={() => setSizeGuideOpen(true)}
-                    className="inline-flex items-center gap-1 text-[#8C5E58] hover:text-[#231F20] underline underline-offset-4 font-medium"
-                  >
-                    <Ruler className="w-3.5 h-3.5" strokeWidth={1.6} />
-                    <span>Guía de tallas</span>
-                  </button>
+                  <span className="font-medium text-[#231F20]">
+                    {isBag || isAccessory ? 'Presentación' : 'Seleccionar talla'}
+                  </span>
+                  {showGuideTrigger && (
+                    <button
+                      type="button"
+                      onClick={() => setSizeGuideOpen(true)}
+                      className="inline-flex items-center gap-1 text-[#8C5E58] hover:text-[#231F20] underline underline-offset-4 font-medium"
+                    >
+                      <Ruler className="w-3.5 h-3.5" strokeWidth={1.6} />
+                      <span>{isBag ? 'Ver medidas' : 'Guía de tallas'}</span>
+                    </button>
+                  )}
                 </div>
                 <span className="text-[#756661] tabular-nums">{stockLabel}</span>
               </div>
@@ -395,9 +420,19 @@ export function ProductDetailModal({
           >
             <div className="flex items-start justify-between gap-4 border-b border-[#EAE0DA] pb-3">
               <div>
-                <h3 className="font-display text-2xl font-medium text-[#231F20]">Guía de Tallas</h3>
+                <h3 className="font-display text-2xl font-medium text-[#231F20]">
+                  {isBag
+                    ? 'Medidas del Bolso'
+                    : isShoes
+                      ? 'Guía de Tallas · Calzado'
+                      : 'Guía de Tallas'}
+                </h3>
                 <p className="text-xs text-[#756661]">
-                  Medidas de referencia corporales expresadas en centímetros (cm).
+                  {isBag
+                    ? 'Dimensiones aproximadas expresadas en centímetros (alto × ancho × fondo).'
+                    : isShoes
+                      ? 'Numeración colombiana y largo aproximado del pie en centímetros (cm).'
+                      : 'Medidas de referencia corporales expresadas en centímetros (cm).'}
                 </p>
               </div>
               <button
@@ -410,34 +445,77 @@ export function ProductDetailModal({
               </button>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="border-b border-[#EAE0DA] text-[#756661]">
-                    <th className="py-2.5 pr-3 font-medium">Talla</th>
-                    <th className="py-2.5 px-3 font-medium">Busto</th>
-                    <th className="py-2.5 px-3 font-medium">Cintura</th>
-                    <th className="py-2.5 pl-3 font-medium">Cadera</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#EAE0DA] text-[#231F20] tabular-nums">
-                  {sizeGuideRows.map((row) => (
-                    <tr key={row.size}>
-                      <td className="py-2.5 pr-3 font-semibold">{row.size}</td>
-                      <td className="py-2.5 px-3 text-[#574B47]">{row.bust}</td>
-                      <td className="py-2.5 px-3 text-[#574B47]">{row.waist}</td>
-                      <td className="py-2.5 pl-3 text-[#574B47]">{row.hip}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            {isBag ? (
+              <div className="space-y-4">
+                <div className="bg-white border border-[#EAE0DA] rounded-xl p-4 space-y-1.5">
+                  <p className="text-xs text-[#756661]">Alto × Ancho × Fondo</p>
+                  <p className="text-base font-semibold text-[#231F20] tabular-nums">
+                    {product.dimensions}
+                  </p>
+                </div>
+                <div className="bg-[#F8EFEA] border border-[#EAE0DA] rounded-xl p-3.5 text-xs text-[#574B47] leading-relaxed">
+                  Las medidas pueden presentar variaciones mínimas por confección artesanal. Si
+                  deseas confirmar capacidad para tu celular o accesorios, escríbenos por WhatsApp.
+                </div>
+              </div>
+            ) : isShoes ? (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="border-b border-[#EAE0DA] text-[#756661]">
+                        <th className="py-2.5 pr-4 font-medium">Talla COL</th>
+                        <th className="py-2.5 pl-4 font-medium">Largo del pie (cm)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#EAE0DA] text-[#231F20] tabular-nums">
+                      {shoeGuideRows.map((row) => (
+                        <tr key={row.size}>
+                          <td className="py-2.5 pr-4 font-semibold">{row.size}</td>
+                          <td className="py-2.5 pl-4 text-[#574B47]">{row.footLength}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
 
-            <div className="bg-[#F8EFEA] border border-[#EAE0DA] rounded-xl p-3.5 text-xs text-[#574B47] leading-relaxed">
-              Si estás entre dos tallas y prefieres un calce más holgado, te sugerimos elegir la
-              talla superior o escribirnos por WhatsApp para asesorarte según el corte de esta
-              prenda.
-            </div>
+                <div className="bg-[#F8EFEA] border border-[#EAE0DA] rounded-xl p-3.5 text-xs text-[#574B47] leading-relaxed">
+                  Para medir tu pie, apoya el talón sobre una hoja contra la pared y mide hasta la
+                  punta del dedo más largo. Si estás entre dos tallas, elige la superior.
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="border-b border-[#EAE0DA] text-[#756661]">
+                        <th className="py-2.5 pr-3 font-medium">Talla</th>
+                        <th className="py-2.5 px-3 font-medium">Busto</th>
+                        <th className="py-2.5 px-3 font-medium">Cintura</th>
+                        <th className="py-2.5 pl-3 font-medium">Cadera</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#EAE0DA] text-[#231F20] tabular-nums">
+                      {sizeGuideRows.map((row) => (
+                        <tr key={row.size}>
+                          <td className="py-2.5 pr-3 font-semibold">{row.size}</td>
+                          <td className="py-2.5 px-3 text-[#574B47]">{row.bust}</td>
+                          <td className="py-2.5 px-3 text-[#574B47]">{row.waist}</td>
+                          <td className="py-2.5 pl-3 text-[#574B47]">{row.hip}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="bg-[#F8EFEA] border border-[#EAE0DA] rounded-xl p-3.5 text-xs text-[#574B47] leading-relaxed">
+                  Si estás entre dos tallas y prefieres un calce más holgado, te sugerimos elegir la
+                  talla superior o escribirnos por WhatsApp para asesorarte según el corte de esta
+                  prenda.
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

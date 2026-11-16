@@ -24,6 +24,11 @@
           "minLength": 5,
           "maxLength": 1200
         },
+        "dimensions": {
+          "type": "string",
+          "description": "Medidas opcionales en cm (alto x ancho x fondo), usadas principalmente en Bolsos.",
+          "maxLength": 80
+        },
         "price": {
           "type": "number",
           "description": "Precio unitario en pesos colombianos."
@@ -31,7 +36,18 @@
         "category": {
           "type": "string",
           "description": "Categoría principal de la prenda.",
-          "enum": ["Vestidos", "Blusas", "Blazers", "Conjuntos", "Faldas", "Pantalones", "Accesorios"]
+          "enum": [
+            "Vestidos",
+            "Blusas",
+            "Shorts",
+            "Pantalones",
+            "Faldas",
+            "Conjuntos",
+            "Blazers",
+            "Calzado",
+            "Bolsos",
+            "Accesorios"
+          ]
         },
         "color": {
           "type": "string",
@@ -45,7 +61,7 @@
         },
         "stockBySize": {
           "type": "object",
-          "description": "Unidades disponibles por talla (claves XS, S, M, L, XL, Única)."
+          "description": "Unidades disponibles por talla (XS-XL, Única o calzado 34-41)."
         },
         "imageUrl": {
           "type": "string",
@@ -396,7 +412,11 @@
         },
         "sizeGuide": {
           "type": "array",
-          "description": "Tabla editable de medidas (busto, cintura y cadera en cm para tallas XS a XL)."
+          "description": "Tabla editable de medidas para ropa (busto, cintura y cadera en cm para tallas XS a XL)."
+        },
+        "shoeSizeGuide": {
+          "type": "array",
+          "description": "Tabla editable de tallas colombianas de calzado (34 a 41) con largo del pie en cm."
         },
         "legalBusinessName": {
           "type": "string",

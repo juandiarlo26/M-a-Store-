@@ -58,27 +58,36 @@ service cloud.firestore {
           'sizes', 'imageUrl', 'stock', 'featured', 'active', 'createdAt', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
-          'sku', 'name', 'description', 'price', 'category', 'color',
+          'sku', 'name', 'description', 'dimensions', 'price', 'category', 'color',
           'sizes', 'stockBySize', 'imageUrl', 'images', 'stock', 'featured', 'active', 'lastOrderId', 'createdAt', 'updatedAt'
         ]) &&
         (!('sku' in data) || (data.sku is string && data.sku.size() >= 2 && data.sku.size() <= 32 && data.sku.matches('^[A-Z0-9\\-]+$'))) &&
         data.name is string && data.name.size() >= 2 && data.name.size() <= 120 &&
         data.description is string && data.description.size() >= 5 && data.description.size() <= 1200 &&
+        (!('dimensions' in data) || (data.dimensions is string && data.dimensions.size() <= 80)) &&
         (data.price is int || data.price is float) && data.price > 0 && data.price <= 100000000 &&
-        data.category in ['Vestidos', 'Blusas', 'Blazers', 'Conjuntos', 'Faldas', 'Pantalones', 'Accesorios'] &&
+        data.category in ['Vestidos', 'Blusas', 'Shorts', 'Pantalones', 'Faldas', 'Conjuntos', 'Blazers', 'Calzado', 'Bolsos', 'Accesorios'] &&
         data.color is string && data.color.size() >= 2 && data.color.size() <= 40 &&
         data.sizes is list && data.sizes.size() >= 1 && data.sizes.size() <= 10 && data.sizes[0] is string &&
         (!('stockBySize' in data) || (
           data.stockBySize is map &&
           data.stockBySize.size() >= 1 &&
           data.stockBySize.size() <= 10 &&
-          data.stockBySize.keys().hasOnly(['XS', 'S', 'M', 'L', 'XL', 'Única']) &&
+          data.stockBySize.keys().hasOnly(['XS', 'S', 'M', 'L', 'XL', 'Única', '34', '35', '36', '37', '38', '39', '40', '41']) &&
           data.stockBySize.get('XS', 0) is int && data.stockBySize.get('XS', 0) >= 0 &&
           data.stockBySize.get('S', 0) is int && data.stockBySize.get('S', 0) >= 0 &&
           data.stockBySize.get('M', 0) is int && data.stockBySize.get('M', 0) >= 0 &&
           data.stockBySize.get('L', 0) is int && data.stockBySize.get('L', 0) >= 0 &&
           data.stockBySize.get('XL', 0) is int && data.stockBySize.get('XL', 0) >= 0 &&
-          data.stockBySize.get('Única', 0) is int && data.stockBySize.get('Única', 0) >= 0
+          data.stockBySize.get('Única', 0) is int && data.stockBySize.get('Única', 0) >= 0 &&
+          data.stockBySize.get('34', 0) is int && data.stockBySize.get('34', 0) >= 0 &&
+          data.stockBySize.get('35', 0) is int && data.stockBySize.get('35', 0) >= 0 &&
+          data.stockBySize.get('36', 0) is int && data.stockBySize.get('36', 0) >= 0 &&
+          data.stockBySize.get('37', 0) is int && data.stockBySize.get('37', 0) >= 0 &&
+          data.stockBySize.get('38', 0) is int && data.stockBySize.get('38', 0) >= 0 &&
+          data.stockBySize.get('39', 0) is int && data.stockBySize.get('39', 0) >= 0 &&
+          data.stockBySize.get('40', 0) is int && data.stockBySize.get('40', 0) >= 0 &&
+          data.stockBySize.get('41', 0) is int && data.stockBySize.get('41', 0) >= 0
         )) &&
         data.imageUrl is string && data.imageUrl.size() >= 4 && data.imageUrl.size() <= 450000 &&
         (!('images' in data) || (
@@ -168,7 +177,7 @@ service cloud.firestore {
         data.keys().hasOnly([
           'announcementText', 'freeShippingThreshold', 'shippingFee', 'heroTitle', 'heroSubtitle',
           'launchMode', 'launchDate', 'metaPixelId', 'gaMeasurementId',
-          'deliveryTimeText', 'sizeGuide',
+          'deliveryTimeText', 'sizeGuide', 'shoeSizeGuide',
           'legalBusinessName', 'legalDocumentId', 'legalAddress', 'legalCity',
           'legalEmail', 'legalPhone', 'legalUpdatedAt',
           'updatedAt'
@@ -184,6 +193,7 @@ service cloud.firestore {
         (!('gaMeasurementId' in data) || data.gaMeasurementId == '' || (data.gaMeasurementId is string && data.gaMeasurementId.matches('^G-[A-Z0-9]{6,16}$'))) &&
         (!('deliveryTimeText' in data) || (data.deliveryTimeText is string && data.deliveryTimeText.size() <= 160)) &&
         (!('sizeGuide' in data) || (data.sizeGuide is list && data.sizeGuide.size() >= 1 && data.sizeGuide.size() <= 10 && data.sizeGuide[0] is map)) &&
+        (!('shoeSizeGuide' in data) || (data.shoeSizeGuide is list && data.shoeSizeGuide.size() >= 1 && data.shoeSizeGuide.size() <= 12 && data.shoeSizeGuide[0] is map)) &&
         (!('legalBusinessName' in data) || (data.legalBusinessName is string && data.legalBusinessName.size() <= 140)) &&
         (!('legalDocumentId' in data) || (data.legalDocumentId is string && data.legalDocumentId.size() <= 40)) &&
         (!('legalAddress' in data) || (data.legalAddress is string && data.legalAddress.size() <= 180)) &&
@@ -247,12 +257,21 @@ service cloud.firestore {
       return (!('stockBySize' in existing()) && !('stockBySize' in incoming())) || (
         'stockBySize' in existing() &&
         'stockBySize' in incoming() &&
+        incoming().stockBySize.keys().hasOnly(['XS', 'S', 'M', 'L', 'XL', 'Única', '34', '35', '36', '37', '38', '39', '40', '41']) &&
         incoming().stockBySize.get('XS', 0) <= existing().stockBySize.get('XS', 0) &&
         incoming().stockBySize.get('S', 0) <= existing().stockBySize.get('S', 0) &&
         incoming().stockBySize.get('M', 0) <= existing().stockBySize.get('M', 0) &&
         incoming().stockBySize.get('L', 0) <= existing().stockBySize.get('L', 0) &&
         incoming().stockBySize.get('XL', 0) <= existing().stockBySize.get('XL', 0) &&
-        incoming().stockBySize.get('Única', 0) <= existing().stockBySize.get('Única', 0)
+        incoming().stockBySize.get('Única', 0) <= existing().stockBySize.get('Única', 0) &&
+        incoming().stockBySize.get('34', 0) <= existing().stockBySize.get('34', 0) &&
+        incoming().stockBySize.get('35', 0) <= existing().stockBySize.get('35', 0) &&
+        incoming().stockBySize.get('36', 0) <= existing().stockBySize.get('36', 0) &&
+        incoming().stockBySize.get('37', 0) <= existing().stockBySize.get('37', 0) &&
+        incoming().stockBySize.get('38', 0) <= existing().stockBySize.get('38', 0) &&
+        incoming().stockBySize.get('39', 0) <= existing().stockBySize.get('39', 0) &&
+        incoming().stockBySize.get('40', 0) <= existing().stockBySize.get('40', 0) &&
+        incoming().stockBySize.get('41', 0) <= existing().stockBySize.get('41', 0)
       );
     }
 

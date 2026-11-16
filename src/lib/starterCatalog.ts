@@ -8,6 +8,7 @@ import {
   PRODUCT_LIMITS,
   type Order,
   type Product,
+  type ShoeSizeGuideRow,
   type SizeGuideRow,
   type StoreSettings,
 } from '../types/store';
@@ -30,6 +31,17 @@ export const DEFAULT_SIZE_GUIDE: SizeGuideRow[] = [
   { size: 'M', bust: '92 - 96 cm', waist: '72 - 76 cm', hip: '98 - 102 cm' },
   { size: 'L', bust: '97 - 102 cm', waist: '77 - 82 cm', hip: '103 - 108 cm' },
   { size: 'XL', bust: '103 - 108 cm', waist: '83 - 88 cm', hip: '109 - 114 cm' },
+];
+
+export const DEFAULT_SHOE_SIZE_GUIDE: ShoeSizeGuideRow[] = [
+  { size: '34', footLength: '21.5 cm' },
+  { size: '35', footLength: '22.2 cm' },
+  { size: '36', footLength: '22.8 cm' },
+  { size: '37', footLength: '23.5 cm' },
+  { size: '38', footLength: '24.2 cm' },
+  { size: '39', footLength: '24.8 cm' },
+  { size: '40', footLength: '25.5 cm' },
+  { size: '41', footLength: '26.2 cm' },
 ];
 
 export function getProductImages(product: Pick<Product, 'imageUrl' | 'images'>): string[] {
@@ -60,6 +72,7 @@ export const DEFAULT_STORE_SETTINGS: StoreSettings = {
   launchDate: null,
   deliveryTimeText: DEFAULT_DELIVERY_TIME_TEXT,
   sizeGuide: DEFAULT_SIZE_GUIDE,
+  shoeSizeGuide: DEFAULT_SHOE_SIZE_GUIDE,
 };
 
 export type StarterProductInput = Omit<Product, 'id' | 'createdAt' | 'updatedAt'> & {

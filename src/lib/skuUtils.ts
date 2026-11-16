@@ -3,10 +3,13 @@ import type { ProductCategory } from '../types/store';
 const CATEGORY_PREFIX: Record<ProductCategory, string> = {
   Vestidos: 'VES',
   Blusas: 'BLU',
-  Blazers: 'BLZ',
-  Conjuntos: 'CNJ',
-  Faldas: 'FAL',
+  Shorts: 'SHR',
   Pantalones: 'PAN',
+  Faldas: 'FAL',
+  Conjuntos: 'CNJ',
+  Blazers: 'BLZ',
+  Calzado: 'CAL',
+  Bolsos: 'BOL',
   Accesorios: 'ACC',
 };
 

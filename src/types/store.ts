@@ -3,23 +3,60 @@ import type { Timestamp } from 'firebase/firestore';
 export type ProductCategory =
   | 'Vestidos'
   | 'Blusas'
-  | 'Blazers'
-  | 'Conjuntos'
-  | 'Faldas'
+  | 'Shorts'
   | 'Pantalones'
+  | 'Faldas'
+  | 'Conjuntos'
+  | 'Blazers'
+  | 'Calzado'
+  | 'Bolsos'
   | 'Accesorios';
 
 export const PRODUCT_CATEGORIES: ProductCategory[] = [
   'Vestidos',
   'Blusas',
-  'Blazers',
-  'Conjuntos',
-  'Faldas',
+  'Shorts',
   'Pantalones',
+  'Faldas',
+  'Conjuntos',
+  'Blazers',
+  'Calzado',
+  'Bolsos',
   'Accesorios',
 ];
 
-export const AVAILABLE_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'Única'] as const;
+export const CLOTHING_SIZES = ['XS', 'S', 'M', 'L', 'XL'] as const;
+export const SHOE_SIZES = ['34', '35', '36', '37', '38', '39', '40', '41'] as const;
+export const ONE_SIZE_ONLY = ['Única'] as const;
+
+export const AVAILABLE_SIZES = [
+  'XS',
+  'S',
+  'M',
+  'L',
+  'XL',
+  'Única',
+  '34',
+  '35',
+  '36',
+  '37',
+  '38',
+  '39',
+  '40',
+  '41',
+] as const;
+
+export function getSizesForCategory(category: ProductCategory): readonly string[] {
+  if (category === 'Calzado') return SHOE_SIZES;
+  if (category === 'Bolsos' || category === 'Accesorios') return ONE_SIZE_ONLY;
+  return CLOTHING_SIZES;
+}
+
+export function getDefaultSizesForCategory(category: ProductCategory): string[] {
+  if (category === 'Calzado') return ['36', '37', '38', '39'];
+  if (category === 'Bolsos' || category === 'Accesorios') return ['Única'];
+  return ['XS', 'S', 'M', 'L'];
+}
 
 export type PaymentMethod = 'whatsapp';
 export type PaymentStatus = 'pendiente_pago' | 'pagado';
@@ -38,6 +75,7 @@ export const PRODUCT_LIMITS = {
   nameMax: 120,
   descriptionMin: 5,
   descriptionMax: 1200,
+  dimensionsMax: 80,
   colorMin: 2,
   colorMax: 40,
   imageUrlMin: 4,
@@ -98,11 +136,17 @@ export interface SizeGuideRow {
   hip: string;
 }
 
+export interface ShoeSizeGuideRow {
+  size: string;
+  footLength: string;
+}
+
 export interface Product {
   id: string;
   sku?: string;
   name: string;
   description: string;
+  dimensions?: string;
   price: number;
   category: ProductCategory;
   color: string;
@@ -199,6 +243,7 @@ export interface StoreSettings {
   gaMeasurementId?: string;
   deliveryTimeText?: string;
   sizeGuide?: SizeGuideRow[];
+  shoeSizeGuide?: ShoeSizeGuideRow[];
   legalBusinessName?: string;
   legalDocumentId?: string;
   legalAddress?: string;

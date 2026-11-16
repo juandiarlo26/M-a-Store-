@@ -40,13 +40,15 @@ import { uploadProductImage } from '../lib/imageUpload';
 import { generateSuggestedSku, normalizeSku } from '../lib/skuUtils';
 import {
   DEFAULT_DELIVERY_TIME_TEXT,
+  DEFAULT_SHOE_SIZE_GUIDE,
   DEFAULT_SIZE_GUIDE,
   formatCOP,
   getProductImages,
   STUDIO_GALLERY_PRESETS,
 } from '../lib/starterCatalog';
 import {
-  AVAILABLE_SIZES,
+  getDefaultSizesForCategory,
+  getSizesForCategory,
   PRODUCT_CATEGORIES,
   PRODUCT_LIMITS,
   SETTINGS_LIMITS,
@@ -55,6 +57,7 @@ import {
   type OrderStatus,
   type Product,
   type ProductCategory,
+  type ShoeSizeGuideRow,
   type SizeGuideRow,
 } from '../types/store';
 import { PrintableTagModal } from './PrintableTagModal';
@@ -186,6 +189,7 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
   const [formCategory, setFormCategory] = useState<ProductCategory>('Vestidos');
   const [formPrice, setFormPrice] = useState('220000');
   const [formColor, setFormColor] = useState('');
+  const [formDimensions, setFormDimensions] = useState('');
   const [formSizes, setFormSizes] = useState<string[]>(['XS', 'S', 'M', 'L']);
   const [formStockBySize, setFormStockBySize] = useState<Record<string, string>>({
     XS: '2',
@@ -193,7 +197,6 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
     M: '3',
     L: '2',
     XL: '0',
-    Única: '0',
   });
   const [formImages, setFormImages] = useState<string[]>([STUDIO_GALLERY_PRESETS[0].url]);
   const [formDescription, setFormDescription] = useState('');
@@ -222,6 +225,11 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
   const [setSizeGuide, setSetSizeGuide] = useState<SizeGuideRow[]>(
     settings.sizeGuide && settings.sizeGuide.length > 0 ? settings.sizeGuide : DEFAULT_SIZE_GUIDE
   );
+  const [setShoeSizeGuide, setSetShoeSizeGuide] = useState<ShoeSizeGuideRow[]>(
+    settings.shoeSizeGuide && settings.shoeSizeGuide.length > 0
+      ? settings.shoeSizeGuide
+      : DEFAULT_SHOE_SIZE_GUIDE
+  );
   const [setLegalBusinessName, setSetLegalBusinessName] = useState(
     settings.legalBusinessName ?? ''
   );
@@ -245,6 +253,11 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
     setSetDeliveryTimeText(settings.deliveryTimeText ?? DEFAULT_DELIVERY_TIME_TEXT);
     setSetSizeGuide(
       settings.sizeGuide && settings.sizeGuide.length > 0 ? settings.sizeGuide : DEFAULT_SIZE_GUIDE
+    );
+    setSetShoeSizeGuide(
+      settings.shoeSizeGuide && settings.shoeSizeGuide.length > 0
+        ? settings.shoeSizeGuide
+        : DEFAULT_SHOE_SIZE_GUIDE
     );
     setSetLegalBusinessName(settings.legalBusinessName ?? '');
     setSetLegalDocumentId(settings.legalDocumentId ?? '');
@@ -287,8 +300,9 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
     setFormCategory('Vestidos');
     setFormPrice('220000');
     setFormColor('Marfil');
-    setFormSizes(['XS', 'S', 'M', 'L']);
-    setFormStockBySize({ XS: '2', S: '3', M: '3', L: '2', XL: '0', Única: '0' });
+    setFormDimensions('');
+    setFormSizes(getDefaultSizesForCategory('Vestidos'));
+    setFormStockBySize({ XS: '2', S: '3', M: '3', L: '2', XL: '0' });
     setFormImages([STUDIO_GALLERY_PRESETS[0].url]);
     setFormDescription('');
     setFormFeatured(true);
@@ -313,17 +327,21 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
     setFormCategory(p.category);
     setFormPrice(String(p.price));
     setFormColor(p.color);
-    const activeSizes = p.sizes.length > 0 ? p.sizes : ['Única'];
+    setFormDimensions(p.dimensions ?? '');
+    const allowedForCategory = getSizesForCategory(p.category);
+    const matchedSizes = p.sizes.filter((sz) => allowedForCategory.includes(sz));
+    const activeSizes =
+      matchedSizes.length > 0
+        ? matchedSizes
+        : p.sizes.length > 0
+          ? p.sizes
+          : getDefaultSizesForCategory(p.category);
     setFormSizes(activeSizes);
 
-    const initialMap: Record<string, string> = {
-      XS: '0',
-      S: '0',
-      M: '0',
-      L: '0',
-      XL: '0',
-      Única: '0',
-    };
+    const initialMap: Record<string, string> = {};
+    for (const sz of allowedForCategory) {
+      initialMap[sz] = '0';
+    }
     if (p.stockBySize && Object.keys(p.stockBySize).length > 0) {
       for (const sz of activeSizes) {
         initialMap[sz] = String(Math.max(0, Math.floor(Number(p.stockBySize[sz] ?? 0))));
@@ -499,12 +517,17 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
 
     setBusyAction(true);
     try {
+      const trimmedDimensions =
+        formCategory === 'Bolsos'
+          ? formDimensions.trim().slice(0, PRODUCT_LIMITS.dimensionsMax)
+          : '';
       const payload: ProductInput = {
         sku: cleanedSku,
         name: formName,
         category: formCategory,
         price: Number(formPrice),
         color: formColor,
+        ...(trimmedDimensions ? { dimensions: trimmedDimensions } : {}),
         stock: calculatedTotalStock,
         sizes: formSizes,
         stockBySize: stockBySizePayload,
@@ -599,6 +622,7 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
         gaMeasurementId: setGaMeasurementId.trim().toUpperCase() || undefined,
         deliveryTimeText: setDeliveryTimeText.trim() || DEFAULT_DELIVERY_TIME_TEXT,
         sizeGuide: setSizeGuide,
+        shoeSizeGuide: setShoeSizeGuide,
         legalBusinessName: setLegalBusinessName,
         legalDocumentId: setLegalDocumentId,
         legalAddress: setLegalAddress,
@@ -2090,7 +2114,7 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
                 <div className="space-y-2.5">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-medium text-[#231F20]">
-                      Tabla de medidas (cm)
+                      Tabla de medidas · Ropa (cm)
                     </span>
                     <button
                       type="button"
@@ -2156,6 +2180,54 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
                                   setSetSizeGuide((prev) =>
                                     prev.map((r, i) =>
                                       i === rowIdx ? { ...r, hip: e.target.value } : r
+                                    )
+                                  )
+                                }
+                                className="w-full min-h-[36px] px-2.5 rounded-lg bg-[#FBF9F7] border border-[#EAE0DA] text-xs focus:outline-none focus:border-[#231F20]"
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="space-y-2.5 pt-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-[#231F20]">
+                      Tabla de medidas · Calzado Colombia (34 a 41)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSetShoeSizeGuide(DEFAULT_SHOE_SIZE_GUIDE)}
+                      className="text-[11px] text-[#8C5E58] hover:text-[#231F20] underline underline-offset-4"
+                    >
+                      Restaurar medidas calzado
+                    </button>
+                  </div>
+                  <div className="overflow-x-auto border border-[#EAE0DA] rounded-xl">
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="bg-[#F8EFEA] text-[#574B47] border-b border-[#EAE0DA]">
+                          <th className="py-2 px-3 font-medium">Talla COL</th>
+                          <th className="py-2 px-3 font-medium">Largo del pie (cm)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#EAE0DA]">
+                        {setShoeSizeGuide.map((row, rowIdx) => (
+                          <tr key={`shoe-row-${row.size}`}>
+                            <td className="py-2 px-3 font-semibold text-[#231F20]">{row.size}</td>
+                            <td className="py-1.5 px-2">
+                              <input
+                                type="text"
+                                maxLength={32}
+                                aria-label={`Largo del pie talla ${row.size}`}
+                                value={row.footLength}
+                                onChange={(e) =>
+                                  setSetShoeSizeGuide((prev) =>
+                                    prev.map((r, i) =>
+                                      i === rowIdx ? { ...r, footLength: e.target.value } : r
                                     )
                                   )
                                 }
@@ -2456,6 +2528,24 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
                           )
                         );
                       }
+                      const allowedSizes = getSizesForCategory(nextCat);
+                      const keptSizes = formSizes.filter((sz) => allowedSizes.includes(sz));
+                      const nextSizes =
+                        keptSizes.length > 0 ? keptSizes : getDefaultSizesForCategory(nextCat);
+                      setFormSizes(nextSizes);
+                      setFormStockBySize((prev) => {
+                        const nextMap: Record<string, string> = {};
+                        for (const sz of allowedSizes) {
+                          if (prev[sz] !== undefined) {
+                            nextMap[sz] = prev[sz];
+                          } else if (!editingProduct && nextSizes.includes(sz)) {
+                            nextMap[sz] = '2';
+                          } else {
+                            nextMap[sz] = '0';
+                          }
+                        }
+                        return nextMap;
+                      });
                     }}
                     className="w-full min-h-[44px] px-3.5 rounded-xl bg-white border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
                   >
@@ -2510,10 +2600,34 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
                 </div>
               </div>
 
+              {formCategory === 'Bolsos' && (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-[#231F20]" htmlFor="prod-dimensions">
+                    Medidas del bolso (opcional · alto × ancho × fondo en cm)
+                  </label>
+                  <input
+                    id="prod-dimensions"
+                    type="text"
+                    maxLength={PRODUCT_LIMITS.dimensionsMax}
+                    value={formDimensions}
+                    onChange={(e) => setFormDimensions(e.target.value)}
+                    placeholder="Ej. 22 cm alto × 28 cm ancho × 10 cm fondo"
+                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-white border border-[#EAE0DA] text-sm focus:outline-none focus:border-[#231F20]"
+                  />
+                  <p className="text-[11px] text-[#756661]">
+                    Se mostrará directamente en el detalle del bolso para orientar a tus clientas.
+                  </p>
+                </div>
+              )}
+
               <div className="space-y-3">
                 <div className="space-y-1">
                   <span className="text-xs font-medium text-[#231F20] block">
-                    Tallas disponibles y stock por talla
+                    {formCategory === 'Bolsos' || formCategory === 'Accesorios'
+                      ? 'Presentación y stock disponible'
+                      : formCategory === 'Calzado'
+                        ? 'Tallas colombianas (34 a 41) y stock por talla'
+                        : 'Tallas disponibles y stock por talla'}
                   </span>
                   {editingProduct && !editingProduct.stockBySize && (
                     <p className="text-[11px] text-[#9A3412]">
@@ -2523,7 +2637,7 @@ export function AdminDashboard({ onBackToStore }: AdminDashboardProps) {
                   )}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {AVAILABLE_SIZES.map((sz) => {
+                  {getSizesForCategory(formCategory).map((sz) => {
                     const selected = formSizes.includes(sz);
                     return (
                       <button
